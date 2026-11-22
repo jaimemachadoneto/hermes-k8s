@@ -336,14 +336,18 @@ def test_each_ignored_finding_has_a_scope_a_reason_and_an_expiry():
     import datetime
 
     data = yaml.safe_load((ROOT / ".trivyignore.yaml").read_text())
-    entries = data["vulnerabilities"]
+    # The scan has two scanners: one for vulnerabilities and one for secrets.
+    entries = data["vulnerabilities"] + data["secrets"]
 
-    assert entries
+    assert data["vulnerabilities"] and data["secrets"]
     today = datetime.date.today()
     for entry in entries:
         assert set(entry) == {"id", "paths", "statement", "expired_at"}, entry
         # A path limits the entry to one package, so the same ID in another package still fails.
-        assert entry["paths"] and all(p.startswith("nix/store/*-") for p in entry["paths"])
+        # A secret finding names its path with a leading "/", a vulnerability finding does not.
+        assert entry["paths"] and all(
+            p.removeprefix("/").startswith("nix/store/*-") for p in entry["paths"]
+        )
         assert len(entry["statement"]) > 40
         expiry = entry["expired_at"]
         expiry = (
