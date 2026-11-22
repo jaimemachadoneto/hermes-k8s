@@ -1,4 +1,11 @@
+---
+status: partly superseded by ADR-0010
+---
+
 # One Claude Pro subscription, used only in the Hermes pod
+
+ADR 0010 replaces one sentence of this ADR. `extra_usage` is `notify`, not
+`stop`. The rest of this ADR holds.
 
 Hermes uses the Claude Pro subscription through the official plugin
 `claude-subscription-directsdk`. For each turn, the plugin starts the
