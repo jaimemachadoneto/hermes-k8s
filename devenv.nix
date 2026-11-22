@@ -7,6 +7,7 @@
   # in devenv.local.nix.
   packages = with pkgs; [
     skopeo # for push-image
+    kubectl # for kubeconfig-live
   ];
 
   # `check` stays the verb of the Python stack. This verb reads the image.
