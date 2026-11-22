@@ -1,0 +1,4 @@
+name: k8s_sandbox
+version: 0.1.0
+description: Terminal backend that runs each session in its own Kubernetes sandbox
+kind: backend
