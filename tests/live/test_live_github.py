@@ -37,8 +37,7 @@ def test_gh_is_logged_in_with_the_token_of_the_secret(make_env):
 def test_the_secret_is_mounted_read_only(make_env):
     env = make_env()
 
-    result = env.execute(
-        "ls /run/secrets/github && ! touch /run/secrets/github/x 2>/dev/null && echo ro"
-    )
+    result = env.execute("grep ' /run/secrets/github ' /proc/mounts")
 
-    assert result["output"].split()[-1] == "ro", result["output"]
+    assert result["returncode"] == 0, result["output"]
+    assert " ro," in result["output"] or " ro " in result["output"], result["output"]

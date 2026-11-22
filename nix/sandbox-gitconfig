@@ -1,6 +1,5 @@
 # The GitHub token for git, by the owner of the repository. The helpers read the files of the
-# Secret of the profile (ADR 0008), so git needs no variable and no token is in a file of the
-# image. The empty "helper =" removes the general helper for jaimemachadoneto. git needs the
+# Secret of the profile (ADR 0008). git needs no variable. No file of the image holds a token. The empty "helper =" removes the general helper for jaimemachadoneto. git needs the
 # path of the URL to select a section by owner.
 [credential "https://github.com"]
 	useHttpPath = true

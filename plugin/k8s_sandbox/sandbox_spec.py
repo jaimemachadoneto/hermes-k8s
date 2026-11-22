@@ -18,8 +18,8 @@ SECRET_PREFIX = "hermes-sandbox-"
 SECRET_VOLUME = "github"
 SECRET_PATH = "/run/secrets/github"
 DEFAULT_PROFILE = "default"
-# A profile id of Hermes may have "_", and a Secret name may not. A profile that the name
-# cannot hold is refused, so that no two profiles share one Secret.
+# A profile id of Hermes may have "_", and a Secret name may not. The code refuses a profile
+# that a Secret name cannot hold, so that no two profiles share one Secret.
 _PROFILE = re.compile(r"[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?")
 
 # The policy pins the image by digest, so a tag that moves cannot change a sandbox.
@@ -53,7 +53,7 @@ def validate_image(image: str) -> None:
 
 
 def secret_name(profile: str) -> str:
-    """Return the name of the Secret of a profile. Raise ValueError for a name that cannot be used."""
+    """Return the name of the Secret of a profile. Raise ValueError when the name is not valid for a Secret."""
     if not _PROFILE.fullmatch(profile):
         raise ValueError(f"the profile has no valid name for a Secret: {profile!r}")
     return SECRET_PREFIX + profile

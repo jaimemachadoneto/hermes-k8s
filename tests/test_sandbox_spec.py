@@ -204,8 +204,11 @@ def test_the_pod_has_no_service_account_token_secret_or_service_link():
     assert pod["automountServiceAccountToken"] is False
     assert pod["enableServiceLinks"] is False
     # The one Secret is the one of the profile, mounted as files and never as variables.
-    assert text.lower().replace("imagepullsecrets", "").count("secretname") == 1
+    assert [v["name"] for v in pod["volumes"]] == ["tmp", "github"]
+    assert [k for v in pod["volumes"] for k in v if k != "name"] == ["emptyDir", "secret"]
     assert "secretKeyRef" not in text and "secretRef" not in text
+    for container in pod["containers"] + pod["initContainers"]:
+        assert "env" not in container and "envFrom" not in container
     assert "valueFrom" not in text
     for container in pod["containers"] + pod["initContainers"]:
         context = container["securityContext"]

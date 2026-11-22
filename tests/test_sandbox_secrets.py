@@ -40,6 +40,23 @@ def test_the_secret_name_follows_the_profile_of_hermes(make_env, cluster, monkey
     assert sandbox.secret_name == "hermes-sandbox-work"
 
 
+def test_the_mount_is_read_only(make_env, cluster):
+    from k8s_sandbox.sandbox_spec import SECRET_VOLUME
+
+    pod = build_sandbox("x", image=IMAGE, labels={})["spec"]["podTemplate"]["spec"]
+    mount = next(m for m in pod["containers"][0]["volumeMounts"] if m["name"] == SECRET_VOLUME)
+    assert mount["readOnly"] is True
+
+
+def test_an_empty_profile_name_uses_the_default(make_env, cluster, monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.current_profile_name", lambda default=None: "")
+
+    make_env()
+
+    (sandbox,) = cluster.sandboxes.values()
+    assert sandbox.secret_name == "hermes-sandbox-default"
+
+
 def test_a_profile_that_a_secret_name_cannot_hold_is_refused(make_env, cluster, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE_NAME", "my_profile")
 
@@ -53,6 +70,14 @@ def test_a_profile_that_a_secret_name_cannot_hold_is_refused(make_env, cluster, 
 def test_secret_name_refuses_a_bad_profile(profile):
     with pytest.raises(ValueError):
         secret_name(profile)
+
+
+def test_secret_name_accepts_the_shortest_and_the_longest_profile():
+    assert secret_name("a") == "hermes-sandbox-a"
+    assert secret_name("a--b") == "hermes-sandbox-a--b"
+    assert secret_name("a" * 42) == "hermes-sandbox-" + "a" * 42
+    with pytest.raises(ValueError):
+        secret_name("a" * 43)
 
 
 def test_the_sandbox_object_holds_no_token_value():
