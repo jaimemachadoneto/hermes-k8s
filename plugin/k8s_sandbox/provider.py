@@ -13,11 +13,21 @@ from agent.terminal_env_provider import TerminalEnvironmentProvider
 from .allowances import allowance_labels
 from .cluster import Cluster
 from .environment import K8sSandboxEnvironment
-from .sandbox_spec import validate_image
+from .sandbox_spec import DEFAULT_PROFILE, secret_name, validate_image
 
 # The GitHub tokens stay in the Secret of the sandbox namespace (ADR 0008). Hermes
 # keeps its own copies for its own features, so the backend hides them from commands.
-GITHUB_KEYS = frozenset({"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_TOKEN_PERSONAL"})
+# The backend hides GIT_CONFIG_SYSTEM too: the image sets it, and a command must not change it.
+HIDDEN_ENV_KEYS = frozenset(
+    {"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_TOKEN_PERSONAL", "GIT_CONFIG_SYSTEM"}
+)
+
+
+def current_profile() -> str:
+    """Return the name of the Hermes profile that the turn runs for."""
+    from hermes_cli.profiles import current_profile_name
+
+    return current_profile_name(DEFAULT_PROFILE) or DEFAULT_PROFILE
 
 
 class K8sSandboxProvider(TerminalEnvironmentProvider):
@@ -44,7 +54,7 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
 
     @property
     def strip_env_keys(self) -> frozenset:
-        return GITHUB_KEYS
+        return HIDDEN_ENV_KEYS
 
     @property
     def default_cwd(self) -> str:
@@ -71,12 +81,17 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
         # The admission policy refuses an image with no digest. Refuse it here, before the first
         # cluster call.
         validate_image(image)
+        profile = current_profile()
+        secret_name(
+            profile
+        )  # Validate the profile here, so that a bad name fails before the first cluster call.
         return K8sSandboxEnvironment(
             cluster=self._cluster_factory(),
             task_id=task_id,
             image=image,
             cwd=cwd,
             timeout=timeout,
+            profile=profile,
             extra_labels=allowance_labels(self.service_allowances()),
             **({"ready_timeout": kwargs["ready_timeout"]} if "ready_timeout" in kwargs else {}),
         )

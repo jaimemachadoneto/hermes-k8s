@@ -12,6 +12,8 @@ IMAGE_PATTERN = re.compile(
     r"ghcr\.io/jaimemachadoneto/hermes-sandbox"
     r"(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}"
 )
+# The Secret of a profile (ADR 0008): the only Secret that a sandbox pod may mount.
+SECRET_PATTERN = re.compile(r"hermes-sandbox-[a-z0-9]([-a-z0-9]*[a-z0-9])?")
 _SCHEDULING_FIELDS = (
     "tolerations",
     "nodeSelector",
@@ -49,8 +51,7 @@ def violations(sandbox: dict) -> list[str]:
     if any(k in pod for k in _SCHEDULING_FIELDS):
         found.append("scheduling")
     for volume in pod.get("volumes", []):
-        empty_dir = volume.get("emptyDir")
-        if empty_dir is None or "sizeLimit" not in empty_dir or empty_dir.get("medium", ""):
+        if not _volume_ok(volume):
             found.append("volume")
     for template in spec.get("volumeClaimTemplates", []):
         if not _template_ok(template.get("spec", {})):
@@ -76,6 +77,14 @@ def violations(sandbox: dict) -> list[str]:
     if not _affinity_ok(pod):
         found.append("affinity")
     return sorted(set(found))
+
+
+def _volume_ok(volume: dict) -> bool:
+    secret = volume.get("secret")
+    if secret is not None:
+        return bool(SECRET_PATTERN.fullmatch(secret.get("secretName", "")))
+    empty_dir = volume.get("emptyDir")
+    return empty_dir is not None and "sizeLimit" in empty_dir and not empty_dir.get("medium", "")
 
 
 def _template_ok(spec: dict) -> bool:
