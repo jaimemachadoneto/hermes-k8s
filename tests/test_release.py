@@ -316,3 +316,37 @@ def test_renovate_never_proposes_a_calendar_tag_of_hermes():
     assert allowed.fullmatch("v0.23.4")
     assert not allowed.fullmatch("v2026.9.24")
     assert config["nix"]["enabled"] is True
+
+
+def test_the_scan_reads_the_ignore_file_and_scans_each_image_before_it_fails():
+    step = next(
+        s
+        for s in workflow("release.yaml")["jobs"]["publish"]["steps"]
+        if "trivy" in s.get("run", "")
+    )
+    script = step["run"]
+
+    assert "--ignorefile .trivyignore.yaml" in script
+    # A failure in the first image must not hide the findings of the second image.
+    assert "--exit-code 1 ||" in script
+    assert script.rstrip().endswith('exit "$failed"')
+
+
+def test_each_ignored_finding_has_a_scope_a_reason_and_an_expiry():
+    import datetime
+
+    data = yaml.safe_load((ROOT / ".trivyignore.yaml").read_text())
+    entries = data["vulnerabilities"]
+
+    assert entries
+    today = datetime.date.today()
+    for entry in entries:
+        assert set(entry) == {"id", "paths", "statement", "expired_at"}, entry
+        # A path limits the entry to one package, so the same ID in another package still fails.
+        assert entry["paths"] and all(p.startswith("nix/store/*-") for p in entry["paths"])
+        assert len(entry["statement"]) > 40
+        expiry = entry["expired_at"]
+        expiry = (
+            expiry if isinstance(expiry, datetime.date) else datetime.date.fromisoformat(expiry)
+        )
+        assert expiry - today <= datetime.timedelta(days=90)
