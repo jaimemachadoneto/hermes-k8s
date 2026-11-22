@@ -55,7 +55,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         """Create the sandbox, or resume the one of the same task id."""
         status = self._cluster.get_sandbox(self.sandbox_name)
         if status is None:
-            # A sandbox that exists keeps its labels: a new allowance applies to a new sandbox.
+            # A sandbox that exists keeps its labels: a new or removed allowance applies to a new sandbox only.
             self._cluster.create_sandbox(
                 self.sandbox_name,
                 image=image,

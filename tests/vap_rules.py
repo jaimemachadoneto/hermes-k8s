@@ -69,7 +69,8 @@ def violations(sandbox: dict) -> list[str]:
             found.append("image")
     if any(s["name"] != "ghcr-pull" for s in pod.get("imagePullSecrets", [])):
         found.append("pull-secret")
-    labels = spec["podTemplate"].get("metadata", {}).get("labels", {})
+    labels = (spec["podTemplate"].get("metadata") or {}).get("labels") or {}
+    labels = labels | (sandbox.get("metadata", {}).get("labels") or {})
     if not set(labels) <= ALLOWED_LABELS:
         found.append("labels")
     if not _affinity_ok(pod):
