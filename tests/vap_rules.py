@@ -2,7 +2,7 @@
 
 The source is `validatingadmissionpolicy.yaml` in home-ops. `fixtures/sandbox-good.yaml` is a
 copy of `tests/hermes-sandbox/sandbox-good.yaml` there. Change this file with the policy.
-The names of the rules: account, host, scheduling, volume, template, init, image, pull-secret and
+The names of the rules: account, labels, host, scheduling, volume, template, init, image, pull-secret and
 affinity. The quantities: only whole `Mi`, `Gi` and `Ti` values (the plugin sends `20Gi`).
 """
 
@@ -20,6 +20,10 @@ _SCHEDULING_FIELDS = (
     "schedulerName",
     "shareProcessNamespace",
 )
+# The labels of the pod that the policy accepts: the task label, and one allowance label for each
+# service that has a CiliumNetworkPolicy in home-ops. A new service needs a new entry here, in the
+# policy and in its own policy.
+ALLOWED_LABELS = frozenset({"hermes-task", "hermes-k8s/allow-litellm"})
 _GIB = 1024**3
 
 
@@ -65,6 +69,9 @@ def violations(sandbox: dict) -> list[str]:
             found.append("image")
     if any(s["name"] != "ghcr-pull" for s in pod.get("imagePullSecrets", [])):
         found.append("pull-secret")
+    labels = spec["podTemplate"].get("metadata", {}).get("labels", {})
+    if not set(labels) <= ALLOWED_LABELS:
+        found.append("labels")
     if not _affinity_ok(pod):
         found.append("affinity")
     return sorted(set(found))

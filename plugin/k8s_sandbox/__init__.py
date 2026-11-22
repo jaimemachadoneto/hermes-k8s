@@ -4,6 +4,7 @@ import functools
 import logging
 import os
 
+from .allowances import SETTING, services_for_profile
 from .kubernetes_cluster import KubernetesCluster
 from .provider import K8sSandboxProvider
 
@@ -21,4 +22,12 @@ def register(ctx) -> None:
     image = os.environ.get("HERMES_K8S_SANDBOX_IMAGE", "")
     if not image:
         logger.warning("HERMES_K8S_SANDBOX_IMAGE is not set: the backend cannot start a sandbox")
-    ctx.register_terminal_environment_provider(K8sSandboxProvider(_cluster, image))
+
+    def allowances() -> list[str]:
+        # Read at each sandbox, because one Hermes process can serve more than one profile.
+        from hermes_cli.profiles import current_profile_name
+
+        profile = current_profile_name("default") or "default"
+        return services_for_profile(ctx.get_config(SETTING), profile)
+
+    ctx.register_terminal_environment_provider(K8sSandboxProvider(_cluster, image, allowances))

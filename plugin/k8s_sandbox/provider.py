@@ -10,6 +10,7 @@ from typing import Any
 
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 
+from .allowances import allowance_labels
 from .cluster import Cluster
 from .environment import K8sSandboxEnvironment
 from .sandbox_spec import validate_image
@@ -27,9 +28,15 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
     # The plugin finds a sandbox by its name, so two non-persistent sessions must not share one.
     session_isolated_when_nonpersistent = True
 
-    def __init__(self, cluster_factory: Callable[[], Cluster] | None = None, image: str = ""):
+    def __init__(
+        self,
+        cluster_factory: Callable[[], Cluster] | None = None,
+        image: str = "",
+        allowances: Callable[[], list[str]] | None = None,
+    ):
         self._cluster_factory = cluster_factory
         self._image = image
+        self._allowances = allowances
 
     @property
     def description(self) -> str:
@@ -43,6 +50,10 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
     def default_cwd(self) -> str:
         # The environment asks the sandbox for its home, the start of the workspace.
         return "~"
+
+    def service_allowances(self) -> list[str]:
+        """The services that the sandboxes of the current profile may reach (ADR 0007)."""
+        return self._allowances() if self._allowances else []
 
     def is_available(self) -> bool:
         return self._cluster_factory is not None and bool(self._image)
@@ -66,5 +77,6 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
             image=image,
             cwd=cwd,
             timeout=timeout,
+            extra_labels=allowance_labels(self.service_allowances()),
             **({"ready_timeout": kwargs["ready_timeout"]} if "ready_timeout" in kwargs else {}),
         )
