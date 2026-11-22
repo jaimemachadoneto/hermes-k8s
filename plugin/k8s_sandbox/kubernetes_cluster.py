@@ -123,8 +123,10 @@ class KubernetesCluster:
             custom=client.CustomObjectsApi(api), core=client.CoreV1Api(api), open_exec=open_exec
         )
 
-    def create_sandbox(self, name: str, *, image: str, labels: dict[str, str]) -> None:
-        body = build_sandbox(name, image=image, labels=labels)
+    def create_sandbox(
+        self, name: str, *, image: str, labels: dict[str, str], profile: str = "default"
+    ) -> None:
+        body = build_sandbox(name, image=image, labels=labels, profile=profile)
         try:
             self._custom.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, PLURAL, body)
         except ApiException as error:

@@ -38,6 +38,24 @@ def test_the_copy_of_the_rules_accepts_the_fixture_of_home_ops():
             lambda s: s["spec"]["podTemplate"]["spec"]["volumes"][0]["emptyDir"].pop("sizeLimit"),
             "volume",
         ),
+        (
+            lambda s: s["spec"]["podTemplate"]["spec"]["volumes"][1]["secret"].update(
+                secretName="ghcr-pull"
+            ),
+            "volume",
+        ),
+        (
+            lambda s: s["spec"]["podTemplate"]["spec"]["volumes"][1]["secret"].update(
+                secretName="hermes-sandbox-"
+            ),
+            "volume",
+        ),
+        (
+            lambda s: s["spec"]["podTemplate"]["spec"]["volumes"].append(
+                {"name": "h", "hostPath": {"path": "/"}}
+            ),
+            "volume",
+        ),
         (lambda s: s["spec"]["podTemplate"]["spec"]["initContainers"][0].update(name="x"), "init"),
         (
             lambda s: s["spec"]["podTemplate"]["spec"]["initContainers"][0].update(
@@ -99,7 +117,16 @@ def test_the_sandbox_has_the_shape_of_the_fixture_of_home_ops():
     # With no Nix base, the volume has no data source (it is empty).
     assert template["spec"] == {k: v for k, v in good_template["spec"].items() if k != "dataSource"}
     mounts = {(m["mountPath"], m.get("subPath")) for m in pod["containers"][0]["volumeMounts"]}
-    assert {("/nix", "nix"), ("/workspace", "workspace"), ("/tmp", None)} <= mounts
+    assert {
+        ("/nix", "nix"),
+        ("/workspace", "workspace"),
+        ("/tmp", None),
+        ("/run/secrets/github", None),
+    } <= mounts
+    secret_mount = next(
+        m for m in pod["containers"][0]["volumeMounts"] if m["mountPath"] == "/run/secrets/github"
+    )
+    assert secret_mount["readOnly"] is True
 
 
 def test_the_init_container_copies_the_closure_of_the_image_into_the_volume():
@@ -176,7 +203,9 @@ def test_the_pod_has_no_service_account_token_secret_or_service_link():
 
     assert pod["automountServiceAccountToken"] is False
     assert pod["enableServiceLinks"] is False
-    assert "secret" not in text.lower().replace("imagepullsecrets", "")
+    # The one Secret is the one of the profile, mounted as files and never as variables.
+    assert text.lower().replace("imagepullsecrets", "").count("secretname") == 1
+    assert "secretKeyRef" not in text and "secretRef" not in text
     assert "valueFrom" not in text
     for container in pod["containers"] + pod["initContainers"]:
         context = container["securityContext"]

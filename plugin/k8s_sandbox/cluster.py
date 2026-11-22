@@ -81,8 +81,10 @@ class Cluster(Protocol):
     Each operation raises a `ClusterError` (or a subclass) when the cluster fails it.
     """
 
-    def create_sandbox(self, name: str, *, image: str, labels: dict[str, str]) -> None:
-        """Create the Sandbox. Do nothing when it exists already."""
+    def create_sandbox(
+        self, name: str, *, image: str, labels: dict[str, str], profile: str = "default"
+    ) -> None:
+        """Create the Sandbox. It mounts the Secret of the profile. Do nothing when it exists already."""
         ...
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:

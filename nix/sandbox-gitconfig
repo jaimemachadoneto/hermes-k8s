@@ -1,0 +1,10 @@
+# The GitHub token for git, by the owner of the repository. The helpers read the files of the
+# Secret of the profile (ADR 0008), so git needs no variable and no token is in a file of the
+# image. The empty "helper =" removes the general helper for jaimemachadoneto. git needs the
+# path of the URL to select a section by owner.
+[credential "https://github.com"]
+	useHttpPath = true
+	helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$(cat /run/secrets/github/GITHUB_TOKEN)\"; }; f"
+[credential "https://github.com/jaimemachadoneto"]
+	helper =
+	helper = "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$(cat /run/secrets/github/GITHUB_TOKEN_PERSONAL)\"; }; f"
