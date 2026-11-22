@@ -16,6 +16,9 @@ from .sandbox_spec import DEFAULT_PROFILE
 NAMESPACE = "hermes-sandbox"
 RUNNING = "Running"
 SUSPENDED = "Suspended"
+# The annotation that holds the last-use time of a sandbox (seconds since the epoch). The idle
+# sweep and the TTL of a suspended sandbox read it.
+LAST_USED_ANNOTATION = "hermes-k8s/last-used"
 
 # A Kubernetes object name is at most 63 characters (a DNS label).
 _NAME_PREFIX = "hermes-"
@@ -58,6 +61,7 @@ class SandboxStatus:
     operating_mode: str
     ready: bool
     suspended: bool
+    last_used: float | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +85,7 @@ class CancelToken:
 
 
 class Cluster(Protocol):
-    """The port has six operations. They create, find, wait for, run in, suspend and delete a sandbox.
+    """The port creates, finds, lists, waits for, runs in, marks, suspends and deletes a sandbox.
 
     Each operation raises a `ClusterError` (or a subclass) when the cluster fails it.
     """
@@ -120,6 +124,14 @@ class Cluster(Protocol):
 
     def set_operating_mode(self, name: str, mode: str) -> None:
         """Set `operatingMode` to RUNNING or SUSPENDED."""
+        ...
+
+    def list_sandboxes(self) -> list[SandboxStatus]:
+        """Return the status of each Sandbox of the namespace."""
+        ...
+
+    def mark_used(self, name: str, at: float) -> None:
+        """Record `at` (seconds since the epoch) as the last-use time of the Sandbox."""
         ...
 
     def delete_sandbox(self, name: str) -> None:

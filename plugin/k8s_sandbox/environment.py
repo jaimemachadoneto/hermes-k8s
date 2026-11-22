@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 
 from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
+from .lifecycle import Clock, UseMarker
 from .sandbox_spec import DEFAULT_PROFILE
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,10 @@ class K8sSandboxEnvironment(BaseEnvironment):
     _stdin_mode = "heredoc"
     # cleanup() suspends the sandbox: the processes in it stop with the pod.
     cleanup_stops_processes = True
+    # Hermes reads this flag. A persistent environment survives the end of a turn, and the idle
+    # reaper of Hermes calls cleanup() after `terminal.lifetime_seconds`. Without the flag, Hermes
+    # calls cleanup() after each turn, and the sandbox is suspended while the user reads the answer.
+    _persistent = True
 
     def __init__(
         self,
@@ -41,6 +47,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         profile: str = DEFAULT_PROFILE,
         ready_timeout: float = READY_TIMEOUT_SECONDS,
         extra_labels: dict[str, str] | None = None,
+        clock: Clock = time.time,
     ):
         super().__init__(cwd=cwd, timeout=timeout)
         self._cluster = cluster
@@ -48,6 +55,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         self._ready_timeout = ready_timeout
         self.sandbox_name = sandbox_name(task_id, profile)
         self._extra_labels = extra_labels or {}
+        self._use = UseMarker(cluster, self.sandbox_name, clock)
         self._open_sandbox(image, profile)
         if cwd == "~":
             self.cwd = self._resolve_home(cwd)
@@ -69,6 +77,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
             self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
             logger.info("Resumed sandbox %s", self.sandbox_name)
         self._cluster.wait_ready(self.sandbox_name, timeout=self._ready_timeout)
+        self._use.mark(force=True)
 
     def _resolve_home(self, cwd: str) -> str:
         result = self._cluster.exec(
@@ -87,19 +96,27 @@ class K8sSandboxEnvironment(BaseEnvironment):
         argv = ["bash", *(["-l"] if login else []), "-c", cmd_string]
 
         def exec_fn() -> tuple[str, int]:
+            # Mark at the start and at the end, so a long command does not look idle.
+            self._use.mark()
             try:
                 result = self._cluster.exec(self.sandbox_name, argv, timeout=timeout, cancel=cancel)
             except ClusterError as error:
                 # The handle of Hermes turns an exception into exit code 1 with no text.
                 logger.warning("exec in sandbox %s failed: %s", self.sandbox_name, error)
                 return f"sandbox error: {error}", 1
+            self._use.mark()
             return result.output, result.exit_code
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel.cancel)
 
     def cleanup(self) -> None:
-        """Suspend the sandbox. Its volume stays for the next environment of the task."""
+        """Suspend the sandbox. Its volume stays for the next environment of the task.
+
+        Hermes calls this at the end of a session, after the idle time, and at shutdown. It never
+        deletes the sandbox: ticket 14 adds a TTL that deletes a suspended sandbox.
+        """
         try:
+            self._use.mark(force=True)
             self._cluster.set_operating_mode(self.sandbox_name, SUSPENDED)
         except Exception:
             logger.warning("Could not suspend sandbox %s", self.sandbox_name, exc_info=True)

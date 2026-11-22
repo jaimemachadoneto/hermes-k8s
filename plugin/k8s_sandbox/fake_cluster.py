@@ -40,6 +40,7 @@ class FakeSandbox:
     directory: Path
     operating_mode: str = RUNNING
     ready: bool = True
+    last_used: float | None = None
     # The Secret that the Sandbox object mounts, and the path of the mount.
     secret_name: str = ""
     secret_mount_path: str = ""
@@ -55,7 +56,7 @@ class FakeSandbox:
     def status(self) -> SandboxStatus:
         suspended = self.operating_mode == SUSPENDED
         return SandboxStatus(
-            self.name, self.operating_mode, self.ready and not suspended, suspended
+            self.name, self.operating_mode, self.ready and not suspended, suspended, self.last_used
         )
 
 
@@ -174,6 +175,16 @@ class FakeCluster:
         if sandbox is None:
             raise SandboxNotFound(name)
         sandbox.operating_mode = mode
+
+    def list_sandboxes(self) -> list[SandboxStatus]:
+        return [sandbox.status() for sandbox in list(self.sandboxes.values())]
+
+    def mark_used(self, name: str, at: float) -> None:
+        with self._lock:
+            sandbox = self.sandboxes.get(name)
+            if sandbox is None:
+                raise SandboxNotFound(name)
+            sandbox.last_used = at
 
     def delete_sandbox(self, name: str) -> None:
         with self._lock:

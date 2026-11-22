@@ -11,6 +11,8 @@ NAMESPACE = "hermes-sandbox"
 VOLUME = "data"
 API_VERSION = "agents.x-k8s.io/v1beta1"
 SHELL = "shell"
+# The home is in the workspace mount, so one volume path keeps the files and the dotfiles.
+HOME = "/workspace/.home"
 INIT = "copy-closure"
 UID = 10000
 # The Secret of a profile (ADR 0008). The admission policy allows only this name pattern.
@@ -29,12 +31,17 @@ _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
 # into the volume. The marker `.closure-copied` shows that a copy is complete. If the volume
 # has the marker, it is a Nix base or an earlier copy, and the step does nothing. If the
 # volume has no marker, the step removes the incomplete copy first. The store is read-only,
-# so run `chmod` before `rm`. The workspace and the home are in the volume too. `mkdir -p`
-# keeps the files that a Nix base has.
+# so run `chmod` before `rm`. The workspace and the home (`/workspace/.home`) are in the volume
+# too. `mkdir -p` keeps the files that a Nix base has.
 # TODO: Make the Job that builds the Nix base write the marker.
 _COPY_CLOSURE = """\
 set -eu
-mkdir -p /data/nix /data/workspace /data/home
+mkdir -p /data/nix /data/workspace
+# An older sandbox kept its home in /data/home. Copy it into the workspace once. The old directory stays.
+if [ -d /data/home ] && [ ! -e /data/workspace/.home ]; then
+  cp -a /data/home /data/workspace/.home
+fi
+mkdir -p /data/workspace/.home
 if [ ! -e /data/nix/.closure-copied ]; then
   if [ -e /data/nix/store ]; then
     chmod -R u+w /data/nix/store
@@ -128,10 +135,12 @@ def build_sandbox(
                             "name": SHELL,
                             "image": image,
                             "securityContext": _security_context(),
+                            # The image sets HOME to a read-only path. A plain value passes the policy `hermes-sandbox-pod`
+                            # (it refuses only `valueFrom` and `envFrom`).
+                            "env": [{"name": "HOME", "value": HOME}],
                             "volumeMounts": [
                                 {"name": VOLUME, "mountPath": "/nix", "subPath": "nix"},
                                 {"name": VOLUME, "mountPath": "/workspace", "subPath": "workspace"},
-                                {"name": VOLUME, "mountPath": "/home/sandbox", "subPath": "home"},
                                 {"name": "tmp", "mountPath": "/tmp"},
                                 {"name": SECRET_VOLUME, "mountPath": SECRET_PATH, "readOnly": True},
                             ],

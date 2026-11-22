@@ -3,9 +3,12 @@
 import functools
 import logging
 import os
+import threading
+import time
 
 from .allowances import SETTING, allowance_labels, services_for_profile
 from .kubernetes_cluster import KubernetesCluster
+from .lifecycle import suspend_idle
 from .provider import K8sSandboxProvider
 
 logger = logging.getLogger(__name__)
@@ -18,6 +21,17 @@ DEFAULT_PROFILE = "default"
 def _cluster() -> KubernetesCluster:
     """Use the account of the Hermes pod, or the kubeconfig that KUBECONFIG names."""
     return KubernetesCluster.from_kubeconfig(os.environ.get("KUBECONFIG"))
+
+
+def _suspend_left_running() -> None:
+    """Suspend the sandboxes that an earlier process left running (a kill, an OOM, a crash)."""
+    try:
+        names = suspend_idle(_cluster(), now=time.time())
+    except Exception:
+        logger.warning("Could not suspend the idle sandboxes at start", exc_info=True)
+        return
+    if names:
+        logger.info("Suspended %d idle sandbox(es) at start: %s", len(names), ", ".join(names))
 
 
 def register(ctx) -> None:
@@ -40,3 +54,5 @@ def register(ctx) -> None:
         return services
 
     ctx.register_terminal_environment_provider(K8sSandboxProvider(_cluster, image, allowances))
+    # In a thread: the call goes to the cluster, and the start of Hermes must not wait for it.
+    threading.Thread(target=_suspend_left_running, name="k8s-sandbox-sweep", daemon=True).start()

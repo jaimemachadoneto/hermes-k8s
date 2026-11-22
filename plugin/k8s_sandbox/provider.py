@@ -5,6 +5,7 @@
 # its own documentation sets a class attribute and returns an environment.
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -13,6 +14,7 @@ from agent.terminal_env_provider import TerminalEnvironmentProvider
 from .allowances import allowance_labels
 from .cluster import Cluster
 from .environment import K8sSandboxEnvironment
+from .lifecycle import Clock
 from .sandbox_spec import DEFAULT_PROFILE, secret_name, validate_image
 
 # The GitHub tokens stay in the Secret of the sandbox namespace (ADR 0008). Hermes
@@ -43,10 +45,12 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
         cluster_factory: Callable[[], Cluster] | None = None,
         image: str = "",
         allowances: Callable[[], list[str]] | None = None,
+        clock: Clock = time.time,
     ):
         self._cluster_factory = cluster_factory
         self._image = image
         self._allowances = allowances
+        self._clock = clock
 
     @property
     def description(self) -> str:
@@ -93,5 +97,6 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
             timeout=timeout,
             profile=profile,
             extra_labels=allowance_labels(self.service_allowances()),
+            clock=self._clock,
             **({"ready_timeout": kwargs["ready_timeout"]} if "ready_timeout" in kwargs else {}),
         )

@@ -59,6 +59,11 @@ class StubCustom:
         if name not in self.objects:
             raise api_error(404, {"message": "not found"})
 
+    def list_namespaced_custom_object(self, group, version, namespace, plural, **kw):
+        if self.fail:
+            raise self.fail
+        return {"items": [i() if callable(i) else i for i in self.objects.values()]}
+
     def delete_namespaced_custom_object(self, group, version, namespace, plural, name, **kw):
         self.calls.append(("delete", name))
         if name not in self.objects:
@@ -422,3 +427,56 @@ def test_an_error_with_a_body_that_is_not_json_still_gives_a_cluster_error(make,
 
     with pytest.raises(ClusterError, match="boom"):
         cluster.create_sandbox("hermes-a", image=IMAGE, labels={})
+
+
+def test_the_status_reads_the_last_use_annotation_as_a_float(make, custom):
+    item = sandbox_object()
+    item["metadata"]["annotations"] = {"hermes-k8s/last-used": "123.5"}
+    custom.objects["hermes-a"] = item
+
+    assert make()[0].get_sandbox("hermes-a").last_used == 123.5
+
+
+@pytest.mark.parametrize("annotations", [None, {}, {"hermes-k8s/last-used": "abc"}])
+def test_a_missing_or_bad_last_use_annotation_gives_none(make, custom, annotations):
+    item = sandbox_object()
+    item["metadata"]["annotations"] = annotations
+    custom.objects["hermes-a"] = item
+
+    assert make()[0].get_sandbox("hermes-a").last_used is None
+
+
+def test_list_gives_one_status_for_each_sandbox(make, custom):
+    custom.objects["hermes-a"] = sandbox_object()
+    custom.objects["hermes-b"] = {
+        **sandbox_object(mode="Suspended"),
+        "metadata": {"name": "hermes-b"},
+    }
+
+    statuses = {s.name: s.operating_mode for s in make()[0].list_sandboxes()}
+
+    assert statuses == {"hermes-a": "Running", "hermes-b": "Suspended"}
+
+
+def test_mark_used_patches_only_the_annotation(make, custom):
+    custom.objects["hermes-a"] = sandbox_object()
+
+    make()[0].mark_used("hermes-a", 99.5)
+
+    assert custom.calls[-1] == (
+        "patch",
+        "hermes-a",
+        {"metadata": {"annotations": {"hermes-k8s/last-used": "99.5"}}},
+    )
+
+
+def test_list_and_mark_raise_cluster_error_on_a_failure(make, custom):
+    custom.objects["hermes-a"] = sandbox_object()
+    custom.fail = api_error(500, {"message": "boom"})
+    with pytest.raises(ClusterError):
+        make()[0].list_sandboxes()
+    with pytest.raises(SandboxNotFound):
+        make()[0].mark_used("missing", 1.0)
+    custom.fail = OSError("reset")
+    with pytest.raises(ClusterError):
+        make()[0].list_sandboxes()
