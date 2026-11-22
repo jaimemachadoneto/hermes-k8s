@@ -5,7 +5,8 @@
 # /etc/gitconfig.
 _dir="${GITHUB_SECRETS_DIR:-/run/secrets/github}"
 for _key in GH_TOKEN GITHUB_TOKEN GITHUB_TOKEN_PERSONAL; do
-  if [ -r "$_dir/$_key" ]; then
+  # A variable that the caller set wins, so `GH_TOKEN=x make` keeps x in a nested bash.
+  if [ -z "${!_key:-}" ] && [ -r "$_dir/$_key" ]; then
     IFS= read -r _value <"$_dir/$_key" || true
     export "$_key=$_value"
   fi

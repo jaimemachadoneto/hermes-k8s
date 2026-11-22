@@ -45,7 +45,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         self._cluster = cluster
         self._task_id = task_id
         self._ready_timeout = ready_timeout
-        self.sandbox_name = sandbox_name(task_id)
+        self.sandbox_name = sandbox_name(task_id, profile)
         self._open_sandbox(image, profile)
         if cwd == "~":
             self.cwd = self._resolve_home(cwd)

@@ -26,7 +26,7 @@ from .cluster import (
     SandboxNotReady,
     SandboxStatus,
 )
-from .sandbox_spec import SECRET_PATH, SECRET_VOLUME, VOLUME, build_sandbox
+from .sandbox_spec import DEFAULT_PROFILE, SECRET_PATH, SECRET_VOLUME, VOLUME, build_sandbox
 
 _POLL_SECONDS = 0.02
 _TEMPLATE = VOLUME
@@ -75,7 +75,7 @@ class FakeCluster:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def create_sandbox(
-        self, name: str, *, image: str, labels: dict[str, str], profile: str = "default"
+        self, name: str, *, image: str, labels: dict[str, str], profile: str = DEFAULT_PROFILE
     ) -> None:
         # The real object decides which Secret the pod mounts.
         body = build_sandbox(name, image=image, labels=labels, profile=profile)

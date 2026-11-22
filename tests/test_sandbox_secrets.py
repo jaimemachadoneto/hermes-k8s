@@ -110,6 +110,25 @@ def test_a_token_is_not_in_the_exec_request(make_env, with_secret):
         assert stdin is None or not any(t.encode() in stdin for t in TOKENS.values())
 
 
+def test_a_variable_that_the_command_sets_is_not_replaced(make_env, with_secret):
+    env = make_env()
+
+    result = env.execute("GH_TOKEN=mine bash -c 'echo \"$GH_TOKEN\"'")
+
+    assert result["output"].strip() == "mine"
+
+
+def test_a_profile_has_its_own_sandbox_for_one_task_id(make_env, cluster, monkeypatch):
+    make_env("shared")
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "work")
+    make_env("shared")
+
+    assert sorted(s.secret_name for s in cluster.sandboxes.values()) == [
+        "hermes-sandbox-default",
+        "hermes-sandbox-work",
+    ]
+
+
 def test_a_sandbox_without_the_secret_runs_commands_without_tokens(make_env, cluster):
     cluster.bash_env = str(ENV_SCRIPT)
     env = make_env()

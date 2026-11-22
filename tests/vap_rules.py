@@ -74,9 +74,7 @@ def violations(sandbox: dict) -> list[str]:
 def _volume_ok(volume: dict) -> bool:
     secret = volume.get("secret")
     if secret is not None:
-        return set(volume) == {"name", "secret"} and bool(
-            SECRET_PATTERN.fullmatch(secret.get("secretName", ""))
-        )
+        return bool(SECRET_PATTERN.fullmatch(secret.get("secretName", "")))
     empty_dir = volume.get("emptyDir")
     return empty_dir is not None and "sizeLimit" in empty_dir and not empty_dir.get("medium", "")
 

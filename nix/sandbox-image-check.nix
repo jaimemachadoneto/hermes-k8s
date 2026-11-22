@@ -69,6 +69,10 @@ pkgs.runCommand "sandbox-image-check"
     exported=$(env -i BASH_ENV="$PWD/rootfs/etc/sandbox/github-env.sh" GITHUB_SECRETS_DIR="$secrets" \
       ${pkgs.bash}/bin/bash -c 'echo "$GH_TOKEN|$GITHUB_TOKEN|$GITHUB_TOKEN_PERSONAL"')
     [ "$exported" = "tok-agents|tok-agents|tok-personal" ] || fail "the token script exports: $exported"
+    # A variable that the caller set is not replaced.
+    kept=$(env -i BASH_ENV="$PWD/rootfs/etc/sandbox/github-env.sh" GITHUB_SECRETS_DIR="$secrets" GH_TOKEN=mine \
+      ${pkgs.bash}/bin/bash -c 'echo "$GH_TOKEN|$GITHUB_TOKEN"')
+    [ "$kept" = "mine|tok-agents" ] || fail "the token script replaces a variable that is set: $kept"
     # With no secret mount the script exports nothing and does not fail.
     none=$(env -i BASH_ENV="$PWD/rootfs/etc/sandbox/github-env.sh" GITHUB_SECRETS_DIR="$PWD/absent" \
       ${pkgs.bash}/bin/bash -c 'echo "[$GH_TOKEN]"')

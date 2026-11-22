@@ -30,7 +30,7 @@ from .cluster import (
     SandboxNotReady,
     SandboxStatus,
 )
-from .sandbox_spec import API_VERSION, NAMESPACE, SHELL, VOLUME, build_sandbox
+from .sandbox_spec import API_VERSION, DEFAULT_PROFILE, NAMESPACE, SHELL, VOLUME, build_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class KubernetesCluster:
         )
 
     def create_sandbox(
-        self, name: str, *, image: str, labels: dict[str, str], profile: str = "default"
+        self, name: str, *, image: str, labels: dict[str, str], profile: str = DEFAULT_PROFILE
     ) -> None:
         body = build_sandbox(name, image=image, labels=labels, profile=profile)
         try:
