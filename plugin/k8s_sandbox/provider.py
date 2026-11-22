@@ -5,6 +5,7 @@
 # its own documentation sets a class attribute and returns an environment.
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -12,6 +13,7 @@ from agent.terminal_env_provider import TerminalEnvironmentProvider
 
 from .cluster import Cluster
 from .environment import K8sSandboxEnvironment
+from .lifecycle import Clock
 from .sandbox_spec import validate_image
 
 # The GitHub tokens stay in the Secret of the sandbox namespace (ADR 0008). Hermes
@@ -27,9 +29,15 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
     # The plugin finds a sandbox by its name, so two non-persistent sessions must not share one.
     session_isolated_when_nonpersistent = True
 
-    def __init__(self, cluster_factory: Callable[[], Cluster] | None = None, image: str = ""):
+    def __init__(
+        self,
+        cluster_factory: Callable[[], Cluster] | None = None,
+        image: str = "",
+        clock: Clock = time.time,
+    ):
         self._cluster_factory = cluster_factory
         self._image = image
+        self._clock = clock
 
     @property
     def description(self) -> str:
@@ -66,5 +74,6 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
             image=image,
             cwd=cwd,
             timeout=timeout,
+            clock=self._clock,
             **({"ready_timeout": kwargs["ready_timeout"]} if "ready_timeout" in kwargs else {}),
         )

@@ -4,6 +4,7 @@
 
 import pytest
 from agent import terminal_env_registry
+from fake_clock import FakeClock
 from images import IMAGE
 from k8s_sandbox.fake_cluster import FakeCluster
 from k8s_sandbox.provider import K8sSandboxProvider
@@ -16,10 +17,15 @@ def cluster(tmp_path):
 
 
 @pytest.fixture
-def registered(cluster):
-    """The backend registered in Hermes, bound to the fake cluster."""
+def clock():
+    return FakeClock()
+
+
+@pytest.fixture
+def registered(cluster, clock):
+    """The backend registered in Hermes, bound to the fake cluster and the test clock."""
     terminal_env_registry._reset_for_tests()
-    provider = K8sSandboxProvider(cluster_factory=lambda: cluster, image=IMAGE)
+    provider = K8sSandboxProvider(cluster_factory=lambda: cluster, image=IMAGE, clock=clock)
     terminal_env_registry.register_provider(provider)
     yield provider
     terminal_env_registry._reset_for_tests()
