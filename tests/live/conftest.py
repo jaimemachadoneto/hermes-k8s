@@ -44,10 +44,18 @@ def cluster():
 
 
 @pytest.fixture
-def registered(cluster):
+def allowed_services():
+    """The service allowances of the profile in a test. A test adds a name before `make_env`."""
+    return []
+
+
+@pytest.fixture
+def registered(cluster, allowed_services):
     terminal_env_registry._reset_for_tests()
     image = os.environ.get("HERMES_K8S_IMAGE", DEFAULT_IMAGE)
-    provider = K8sSandboxProvider(cluster_factory=lambda: cluster, image=image)
+    provider = K8sSandboxProvider(
+        cluster_factory=lambda: cluster, image=image, allowances=lambda: list(allowed_services)
+    )
     terminal_env_registry.register_provider(provider)
     yield provider
     terminal_env_registry._reset_for_tests()
