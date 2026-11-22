@@ -4,7 +4,16 @@
 # here may depend on a Nix daemon or on state in /nix/var.
 { pkgs, pkgs-unstable }:
 let
+  inherit (pkgs) lib;
   uid = "10000";
+
+  # The service of the Nix cache in home-ops (namespace system).
+  nixCache = "http://nix-cache.system.svc.cluster.local:8501";
+  publicKeys = [
+    "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+    "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+    "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+  ];
 
   tools = with pkgs; [
     git
@@ -50,8 +59,16 @@ pkgs.dockerTools.buildLayeredImage {
 
     # No daemon and no build users: Nix runs as one user. The Nix sandbox
     # needs user namespaces, which the pod does not allow (ADR 0003).
+    #
+    # The Nix cache (ncps) is the first substituter. The three public caches
+    # stay as a fallback. A sandbox then works when the Nix cache is down.
+    # ncps passes the upstream signatures through and has no key of its own.
+    # Trust only the keys of the upstream caches.
     printf '%s\n' 'sandbox = false' 'build-users-group =' \
-      'experimental-features = nix-command flakes' > etc/nix/nix.conf
+      'experimental-features = nix-command flakes' \
+      'substituters = ${nixCache} https://cache.nixos.org https://devenv.cachix.org https://nix-community.cachix.org' \
+      'trusted-public-keys = ${lib.concatStringsSep " " publicKeys}' \
+      > etc/nix/nix.conf
 
     # The GitHub tokens (ADR 0008). The plugin mounts the Secret of the profile at
     # /run/secrets/github. A command is `bash -c`, not a login shell, so BASH_ENV

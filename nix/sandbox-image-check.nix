@@ -54,6 +54,20 @@ pkgs.runCommand "sandbox-image-check"
     grep -q '^[^:]*:x:10000:10000:' rootfs/etc/passwd || fail "no passwd entry for uid 10000"
     grep -q '^sandbox *= *false' rootfs/etc/nix/nix.conf || fail "nix.conf has no sandbox = false"
 
+    # The Nix cache must come first. Then a path outside the Nix base comes
+    # from the cluster and not from the internet. Trust the public keys of the
+    # upstream caches. ncps passes the signatures through.
+    nixconf=rootfs/etc/nix/nix.conf
+    first=$(sed -n 's/^substituters *= *//p' "$nixconf" | awk '{print $1}')
+    [ "$first" = "http://nix-cache.system.svc.cluster.local:8501" ] \
+      || fail "the first cache of nix.conf is '$first', want the Nix cache"
+    keys=$(sed -n 's/^trusted-public-keys *= *//p' "$nixconf")
+    for key in cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= \
+      nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs= \
+      devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=; do
+      case " $keys " in *" $key "*) ;; *) fail "trusted-public-keys has no $key" ;; esac
+    done
+
     # The GitHub tokens (ADR 0008): the exec of a command is not a login shell, so
     # BASH_ENV must name the script, and the system file of git must be in /etc.
     [ "$(cfg '.config.Env | map(select(startswith("BASH_ENV="))) | join(" ")')" = "BASH_ENV=/etc/sandbox/github-env.sh" ] \
