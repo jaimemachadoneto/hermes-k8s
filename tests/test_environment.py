@@ -1,88 +1,7 @@
-"""Create the environment through the factory of Hermes, run commands, clean each environment."""
+"""Seam 1 through the fake cluster: the shared suite, and the tests that need its internals."""
 
-
-def test_a_command_returns_its_output_and_exit_code(make_env):
-    env = make_env()
-
-    ok = env.execute("echo hello")
-    failed = env.execute("echo oops >&2; exit 3")
-
-    assert ok["output"].strip() == "hello"
-    assert ok["returncode"] == 0
-    assert "oops" in failed["output"]
-    assert failed["returncode"] == 3
-
-
-def test_the_directory_and_the_exports_stay_between_commands(make_env):
-    env = make_env()
-
-    env.execute("mkdir -p project/src && cd project/src && export STAGE=build")
-    pwd = env.execute("pwd")
-    stage = env.execute('echo "stage=$STAGE"')
-
-    assert pwd["output"].strip().endswith("/project/src")
-    assert stage["output"].strip() == "stage=build"
-
-
-def test_a_command_that_runs_too_long_ends_with_exit_code_124(make_env):
-    env = make_env()
-
-    result = env.execute("echo start; sleep 30", timeout=1)
-
-    assert result["returncode"] == 124
-    assert "start" in result["output"]
-    # The shell of the sandbox is still usable after the kill.
-    assert env.execute("echo alive")["output"].strip() == "alive"
-
-
-def test_an_interrupt_stops_a_running_command_with_exit_code_130(make_env):
-    import threading
-    import time
-
-    from tools.interrupt import set_interrupt
-
-    env = make_env()
-    tid = threading.current_thread().ident
-    timer = threading.Timer(0.5, set_interrupt, args=(True, tid))
-    timer.start()
-    started = time.monotonic()
-    try:
-        result = env.execute("sleep 30", timeout=60)
-    finally:
-        timer.cancel()
-        set_interrupt(False, tid)
-
-    assert result["returncode"] == 130
-    assert time.monotonic() - started < 10
-
-
-def test_cleanup_suspends_the_sandbox_and_the_next_environment_of_the_task_resumes_it(
-    make_env, cluster
-):
-    first = make_env("task-a")
-    first.execute("echo kept > note.txt")
-    first.cleanup()
-
-    (suspended,) = cluster.sandboxes.values()
-    assert suspended.operating_mode == "Suspended"
-
-    second = make_env("task-a")
-    assert second.execute("cat note.txt")["output"].strip() == "kept"
-    assert len(cluster.sandboxes) == 1
-    assert suspended.operating_mode == "Running"
-
-
-def test_each_task_id_has_its_own_sandbox_and_the_same_id_has_the_same_one(make_env, cluster):
-    a = make_env("session:a")
-    b = make_env("session:b")
-    a_again = make_env("session:a")
-
-    a.execute("echo from-a > marker")
-
-    assert len(cluster.sandboxes) == 2
-    assert b.execute("ls")["output"].strip() == ""
-    assert a_again.execute("cat marker")["output"].strip() == "from-a"
-    assert a.sandbox_name == a_again.sandbox_name != b.sandbox_name
+from images import IMAGE
+from seam1_shared import *
 
 
 def test_the_sandbox_name_is_a_valid_name_of_at_most_63_characters(make_env, cluster):
@@ -99,41 +18,11 @@ def test_the_sandbox_name_is_a_valid_name_of_at_most_63_characters(make_env, clu
         assert re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?", name)
 
 
-def test_the_environment_does_not_sync_files_with_the_hermes_home(
-    make_env, cluster, tmp_path, monkeypatch
-):
-    home = tmp_path / "hermes-home"
-    home.mkdir()
-    (home / ".env").write_text("SECRET=1\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    env = make_env()
-    env.execute("echo written-in-sandbox > from-sandbox.txt")
-    absent = env.execute("test ! -e ~/.hermes && test ! -e ~/.env && echo absent")["output"]
-
-    assert absent.strip() == "absent"
-    assert sorted(p.name for p in home.iterdir()) == [".env"]
-
-
-def test_standard_input_goes_to_the_command(make_env):
-    env = make_env()
-
-    result = env.execute("cat", stdin_data="line one\nline two")
-
-    assert result["output"].strip() == "line one\nline two"
-
-
 def test_two_long_ids_with_one_prefix_have_two_sandboxes(make_env, cluster):
     make_env("x" * 500)
     make_env("x" * 500 + "y")
 
     assert len(cluster.sandboxes) == 2
-
-
-def test_a_given_working_directory_is_the_start_of_the_commands(make_env):
-    env = make_env(cwd="/tmp")
-
-    assert env.execute("pwd")["output"].strip() == "/tmp"
 
 
 def test_a_command_reports_the_error_when_the_sandbox_is_gone(make_env, cluster):
@@ -168,7 +57,7 @@ def test_the_provider_refuses_to_create_an_environment_without_a_cluster_client(
     from k8s_sandbox.provider import K8sSandboxProvider
 
     with pytest.raises(RuntimeError):
-        K8sSandboxProvider(image="sandbox:test").create_environment(cwd="/tmp", timeout=5)
+        K8sSandboxProvider(image=IMAGE).create_environment(cwd="/tmp", timeout=5)
 
 
 def test_the_provider_refuses_to_create_an_environment_without_an_image(cluster):
@@ -179,3 +68,30 @@ def test_the_provider_refuses_to_create_an_environment_without_an_image(cluster)
         K8sSandboxProvider(cluster_factory=lambda: cluster).create_environment(
             cwd="/tmp", timeout=5
         )
+
+
+def test_the_provider_refuses_an_image_without_a_digest(cluster):
+    import pytest
+    from k8s_sandbox.provider import K8sSandboxProvider
+
+    provider = K8sSandboxProvider(cluster_factory=lambda: cluster)
+    for image in (
+        "ghcr.io/jaimemachadoneto/hermes-sandbox",
+        "ghcr.io/jaimemachadoneto/hermes-sandbox:y2iwr4mjg4pn",
+        "ghcr.io/jaimemachadoneto/hermes-sandbox@sha256:abc",
+    ):
+        with pytest.raises(ValueError, match="digest"):
+            provider.create_environment(cwd="/tmp", timeout=5, image=image)
+    assert cluster.sandboxes == {}
+
+
+def test_the_configured_image_wins_over_the_image_that_hermes_passes(cluster):
+    from k8s_sandbox.provider import K8sSandboxProvider
+
+    provider = K8sSandboxProvider(cluster_factory=lambda: cluster, image=IMAGE)
+
+    # Hermes passes its own container image setting. That image is not a sandbox image.
+    provider.create_environment(cwd="/tmp", timeout=5, image="python:3.12")
+
+    (sandbox,) = cluster.sandboxes.values()
+    assert sandbox.image == IMAGE

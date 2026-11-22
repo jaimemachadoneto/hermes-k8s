@@ -4,6 +4,7 @@
 
 import pytest
 from agent import terminal_env_registry
+from images import IMAGE
 from k8s_sandbox.fake_cluster import FakeCluster
 from k8s_sandbox.provider import K8sSandboxProvider
 from tools.terminal_tool_backends import _create_environment
@@ -18,7 +19,7 @@ def cluster(tmp_path):
 def registered(cluster):
     """The backend registered in Hermes, bound to the fake cluster."""
     terminal_env_registry._reset_for_tests()
-    provider = K8sSandboxProvider(cluster_factory=lambda: cluster, image="sandbox:test")
+    provider = K8sSandboxProvider(cluster_factory=lambda: cluster, image=IMAGE)
     terminal_env_registry.register_provider(provider)
     yield provider
     terminal_env_registry._reset_for_tests()
