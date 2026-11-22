@@ -55,7 +55,9 @@ pkgs.dockerTools.buildLayeredImage {
 
     ln -s ${pkgs.tini}/bin/tini usr/bin/tini
     ln -s ${pkgs.coreutils}/bin/env usr/bin/env
-    chmod 1777 tmp
+    # Clear setgid: a directory can inherit it on the runner (fsGroup), and the
+    # syscall filter of Nix refuses a chmod that keeps it.
+    chmod a+rwx,g-s,+t tmp
   '';
   fakeRootCommands = ''
     chown ${uid}:${uid} workspace home/sandbox
