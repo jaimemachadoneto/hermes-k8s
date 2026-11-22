@@ -55,10 +55,12 @@ pkgs.dockerTools.buildLayeredImage {
 
     ln -s ${pkgs.tini}/bin/tini usr/bin/tini
     ln -s ${pkgs.coreutils}/bin/env usr/bin/env
-    chmod 1777 tmp
   '';
   fakeRootCommands = ''
     chown ${uid}:${uid} workspace home/sandbox
+    # fakeroot keeps the sticky bit in the layer. A plain chmod in extraCommands
+    # fails on the build directory of the runner arc-jmn-nix.
+    chmod 1777 tmp
   '';
   config = {
     User = "${uid}:${uid}";

@@ -22,6 +22,13 @@ pkgs.runCommand "sandbox-image-check"
       chmod -R u+w rootfs
     done
 
+    # The sticky bit does not survive an unpack by a user that is not root, so
+    # read the mode of /tmp from the listing of the layers.
+    for layer in $(jq -r '.[0].Layers[]' archive/manifest.json); do
+      tar -tvf "archive/$layer" 2>/dev/null || true
+    done > layers.txt
+    grep -Eq '^drwxrwxrwt .* (\./)?tmp/?$' layers.txt || fail "/tmp is not mode 1777"
+
     cfg() { jq -r "$1" "archive/$config"; }
 
     [ "$(cfg '.config.User')" = "10000:10000" ] || fail "User is $(cfg '.config.User'), want 10000:10000"
