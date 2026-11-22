@@ -33,7 +33,10 @@ _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
 # volume has no marker, the step removes the incomplete copy first. The store is read-only,
 # so run `chmod` before `rm`. The workspace and the home (`/workspace/.home`) are in the volume
 # too. `mkdir -p` keeps the files that a Nix base has.
-# TODO: Make the Job that builds the Nix base write the marker.
+# The Job that builds a Nix base writes the marker too (`nix-base-build` in the image).
+# Nix knows a store path only when its database lists the path. The image has the list of its
+# own paths at /etc/nix/registration, and the step loads it into the database of the volume.
+# Without it, Nix downloads each path of the image again.
 _COPY_CLOSURE = """\
 set -eu
 mkdir -p /data/nix /data/workspace
@@ -48,9 +51,15 @@ if [ ! -e /data/nix/.closure-copied ]; then
     rm -rf /data/nix/store
   fi
   cp -a --no-preserve=ownership /nix/store /data/nix/store
+  NIX_STATE_DIR=/data/nix/var/nix NIX_LOG_DIR=/data/nix/var/log/nix \\
+    nix-store --load-db < /etc/nix/registration
   touch /data/nix/.closure-copied
 fi
 """
+
+# A VolumeSnapshot name has at most 253 characters: lowercase letters, digits, '-' and '.'.
+# It starts and ends with a letter or a digit.
+_SNAPSHOT_NAME = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")
 
 
 def validate_image(image: str) -> None:
@@ -74,10 +83,37 @@ def _security_context() -> dict:
     }
 
 
+def _volume_spec(nix_base: str | None) -> dict:
+    spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "storageClassName": "ceph-block",
+        # The size of a Nix base. A clone cannot be smaller than its snapshot, and the policy
+        # allows 20Gi at most.
+        "resources": {"requests": {"storage": "20Gi"}},
+    }
+    if nix_base is not None:
+        if not _SNAPSHOT_NAME.fullmatch(nix_base):
+            raise ValueError(f"the name of the Nix base is not a valid name: {nix_base!r}")
+        spec["dataSource"] = {
+            "apiGroup": "snapshot.storage.k8s.io",
+            "kind": "VolumeSnapshot",
+            "name": nix_base,
+        }
+    return spec
+
+
 def build_sandbox(
-    name: str, *, image: str, labels: dict[str, str], profile: str = DEFAULT_PROFILE
+    name: str,
+    *,
+    image: str,
+    labels: dict[str, str],
+    profile: str = DEFAULT_PROFILE,
+    nix_base: str | None = None,
 ) -> dict:
-    """Return the Sandbox object. It names the Secret of the profile and holds no token."""
+    """Return the Sandbox object. It names the Secret of the profile and holds no token.
+
+    With `nix_base`, the volume is a clone of that VolumeSnapshot. Without it, the volume is empty.
+    """
     validate_image(image)
     secret = secret_name(profile)
     return {
@@ -156,11 +192,7 @@ def build_sandbox(
             "volumeClaimTemplates": [
                 {
                     "metadata": {"name": VOLUME},
-                    "spec": {
-                        "accessModes": ["ReadWriteOnce"],
-                        "storageClassName": "ceph-block",
-                        "resources": {"requests": {"storage": "20Gi"}},
-                    },
+                    "spec": _volume_spec(nix_base),
                 }
             ],
         },

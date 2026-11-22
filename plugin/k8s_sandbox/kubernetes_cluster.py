@@ -12,6 +12,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import urllib3.exceptions
@@ -26,17 +27,24 @@ from .cluster import (
     CancelToken,
     ClusterError,
     ExecResult,
+    NixBase,
     QuotaExceeded,
     SandboxNotFound,
     SandboxNotReady,
     SandboxStatus,
 )
+from .nix_base import KIND, LABEL_DIGEST, LABEL_KIND
 from .sandbox_spec import API_VERSION, DEFAULT_PROFILE, NAMESPACE, SHELL, VOLUME, build_sandbox
 
 logger = logging.getLogger(__name__)
 
 GROUP, VERSION = API_VERSION.split("/")
 PLURAL = "sandboxes"
+SNAPSHOT_GROUP, SNAPSHOT_VERSION, SNAPSHOT_PLURAL = (
+    "snapshot.storage.k8s.io",
+    "v1",
+    "volumesnapshots",
+)
 _POLL_SECONDS = 1.0
 _EXEC_POLL_SECONDS = 0.1
 _QUOTA = re.compile(r"exceeded quota: ([\w.-]+)")
@@ -125,9 +133,15 @@ class KubernetesCluster:
         )
 
     def create_sandbox(
-        self, name: str, *, image: str, labels: dict[str, str], profile: str = DEFAULT_PROFILE
+        self,
+        name: str,
+        *,
+        image: str,
+        labels: dict[str, str],
+        profile: str = DEFAULT_PROFILE,
+        nix_base: str | None = None,
     ) -> None:
-        body = build_sandbox(name, image=image, labels=labels, profile=profile)
+        body = build_sandbox(name, image=image, labels=labels, profile=profile, nix_base=nix_base)
         try:
             self._custom.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, PLURAL, body)
         except ApiException as error:
@@ -292,3 +306,37 @@ class KubernetesCluster:
             except ApiException as error:
                 if error.status != 404:
                     raise _map(error, what) from None
+
+    def list_nix_bases(self) -> list[NixBase]:
+        try:
+            result = self._custom.list_namespaced_custom_object(
+                SNAPSHOT_GROUP,
+                SNAPSHOT_VERSION,
+                NAMESPACE,
+                SNAPSHOT_PLURAL,
+                label_selector=f"{LABEL_KIND}={KIND}",
+            )
+        except ApiException as error:
+            raise _map(error, "list the Nix bases") from None
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"list the Nix bases: {type(error).__name__}") from None
+        return [
+            NixBase(
+                name=item["metadata"]["name"],
+                image_digest=item["metadata"].get("labels", {}).get(LABEL_DIGEST, ""),
+                created=datetime.fromisoformat(item["metadata"]["creationTimestamp"]).timestamp(),
+                ready=bool(item.get("status", {}).get("readyToUse")),
+            )
+            for item in result.get("items", [])
+            # The CSI driver keeps a snapshot that has a clone. Do not select it.
+            if not item["metadata"].get("deletionTimestamp")
+        ]
+
+    def delete_nix_base(self, name: str) -> None:
+        try:
+            self._custom.delete_namespaced_custom_object(
+                SNAPSHOT_GROUP, SNAPSHOT_VERSION, NAMESPACE, SNAPSHOT_PLURAL, name
+            )
+        except ApiException as error:
+            if error.status != 404:
+                raise _map(error, f"delete the Nix base {name}") from None

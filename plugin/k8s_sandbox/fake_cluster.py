@@ -22,6 +22,7 @@ from .cluster import (
     CancelToken,
     ClusterError,
     ExecResult,
+    NixBase,
     SandboxNotFound,
     SandboxNotReady,
     SandboxStatus,
@@ -44,6 +45,8 @@ class FakeSandbox:
     # The Secret that the Sandbox object mounts, and the path of the mount.
     secret_name: str = ""
     secret_mount_path: str = ""
+    # The name of the Nix base that the volume was cloned from, or None for an empty volume.
+    nix_base: str | None = None
 
     @property
     def pod_name(self) -> str:
@@ -73,13 +76,20 @@ class FakeCluster:
     bash_env: str = ""
     # Each exec request that the cluster received: the argv and the stdin.
     exec_log: list[tuple[list[str], bytes | None]] = field(default_factory=list)
+    nix_bases: list[NixBase] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def create_sandbox(
-        self, name: str, *, image: str, labels: dict[str, str], profile: str = DEFAULT_PROFILE
+        self,
+        name: str,
+        *,
+        image: str,
+        labels: dict[str, str],
+        profile: str = DEFAULT_PROFILE,
+        nix_base: str | None = None,
     ) -> None:
         # The real object decides which Secret the pod mounts.
-        body = build_sandbox(name, image=image, labels=labels, profile=profile)
+        body = build_sandbox(name, image=image, labels=labels, profile=profile, nix_base=nix_base)
         pod = body["spec"]["podTemplate"]["spec"]
         secret = next(
             v["secret"]["secretName"] for v in pod["volumes"] if v["name"] == SECRET_VOLUME
@@ -102,6 +112,7 @@ class FakeCluster:
                 ready=not self.never_ready,
                 secret_name=secret,
                 secret_mount_path=mount["mountPath"],
+                nix_base=nix_base,
             )
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
@@ -189,6 +200,12 @@ class FakeCluster:
     def delete_sandbox(self, name: str) -> None:
         with self._lock:
             self.sandboxes.pop(name, None)
+
+    def list_nix_bases(self) -> list[NixBase]:
+        return list(self.nix_bases)
+
+    def delete_nix_base(self, name: str) -> None:
+        self.nix_bases = [b for b in self.nix_bases if b.name != name]
 
 
 def _kill(proc: subprocess.Popen) -> str:

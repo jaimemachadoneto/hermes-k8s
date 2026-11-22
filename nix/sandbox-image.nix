@@ -38,14 +38,34 @@ let
     direnv
     pkgs-unstable.devenv
   ];
-in
-pkgs.dockerTools.buildLayeredImage {
-  name = "ghcr.io/jaimemachadoneto/hermes-sandbox";
+
+  # The builder of a Nix base (ADR 0003). The Nix base Job runs it, and the init step of a
+  # sandbox does the same copy with a shell script in `sandbox_spec.py`.
+  builder = pkgs.writeShellApplication {
+    name = "nix-base-build";
+    runtimeInputs = with pkgs; [
+      coreutils
+      git
+      nix
+      pkgs-unstable.devenv
+    ];
+    text = builtins.readFile ./nix-base-build.sh;
+  };
+
   contents = tools ++ [
+    builder
     pkgs.dockerTools.binSh
     pkgs.dockerTools.caCertificates
     pkgs.tini
   ];
+
+  # The Nix database of the volume lists no path at the start. This file lists each store path
+  # of the image, so that Nix keeps the paths that the copy brings instead of fetching them.
+  registration = "${pkgs.closureInfo { rootPaths = contents; }}/registration";
+in
+pkgs.dockerTools.buildLayeredImage {
+  name = "ghcr.io/jaimemachadoneto/hermes-sandbox";
+  inherit contents;
   extraCommands = ''
     mkdir -p usr/bin workspace tmp home/sandbox etc/nix etc/sandbox run/secrets/github
 
@@ -79,6 +99,9 @@ pkgs.dockerTools.buildLayeredImage {
     cp ${./sandbox-gitconfig} etc/gitconfig
     printf '%s\n' '. /etc/sandbox/github-env.sh' > etc/profile
 
+    # The init step of a sandbox and the builder read this file.
+    cp ${registration} etc/nix/registration
+
     ln -s ${pkgs.tini}/bin/tini usr/bin/tini
     ln -s ${pkgs.coreutils}/bin/env usr/bin/env
     # Clear setgid: a directory can inherit it on the runner (fsGroup), and the
@@ -109,4 +132,7 @@ pkgs.dockerTools.buildLayeredImage {
       "GIT_CONFIG_SYSTEM=/etc/gitconfig"
     ];
   };
+}
+// {
+  inherit builder registration;
 }

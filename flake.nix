@@ -52,6 +52,11 @@
           inherit pkgs;
           image = sandbox-image;
         };
+        nix-base-build = import ./nix/nix-base-build-check.nix {
+          inherit pkgs;
+          image = sandbox-image;
+          inherit (sandbox-image) builder registration;
+        };
         hermes-image = import ./nix/hermes-image-check.nix {
           inherit pkgs;
           image = hermes-image;

@@ -10,6 +10,7 @@ from tools.environments.base_output import _ThreadedProcessHandle
 
 from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
 from .lifecycle import Clock, UseMarker
+from .nix_base import choose_nix_base
 from .sandbox_spec import DEFAULT_PROFILE
 
 logger = logging.getLogger(__name__)
@@ -66,13 +67,19 @@ class K8sSandboxEnvironment(BaseEnvironment):
         status = self._cluster.get_sandbox(self.sandbox_name)
         if status is None:
             # An existing sandbox keeps its labels. A changed allowance applies only to a new sandbox.
+            nix_base = choose_nix_base(self._cluster, image)
             self._cluster.create_sandbox(
                 self.sandbox_name,
                 image=image,
                 labels={"hermes-task": self.sandbox_name, **self._extra_labels},
                 profile=profile,
+                nix_base=nix_base,
             )
-            logger.info("Created sandbox %s", self.sandbox_name)
+            logger.info(
+                "Created sandbox %s with %s",
+                self.sandbox_name,
+                f"Nix base {nix_base}" if nix_base else "an empty volume",
+            )
         elif status.operating_mode == SUSPENDED:
             self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
             logger.info("Resumed sandbox %s", self.sandbox_name)
