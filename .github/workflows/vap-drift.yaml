@@ -2,7 +2,7 @@ name: vap-drift
 
 # tests/vap_rules.py is a Python copy of the admission policy in home-ops. This
 # workflow compares the image pattern of both. It does not run on every pull
-# request: a change in home-ops must not block an unrelated change here.
+# request. A change in home-ops must not block an unrelated change here.
 on:
   pull_request:
     paths:
@@ -23,9 +23,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           repository: jaimemachadoneto/home-ops
           token: ${{ secrets.MY_PAT }}
           path: gitops

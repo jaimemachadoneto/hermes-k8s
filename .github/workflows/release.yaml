@@ -1,12 +1,13 @@
 name: release
 
 # `deploy patch|minor|major` pushes the tag vX.Y.Z that starts this workflow.
-# It checks and builds both images, scans them, pushes them to ghcr.io as
-# X.Y.Z and sha-<commit>, then opens a PR in home-ops that sets the new
-# references with their digests. Flux applies the PR after the merge.
+# The workflow checks and builds both images. It scans them. It pushes them
+# to ghcr.io as X.Y.Z and sha-<commit>. Then it opens a PR in home-ops that
+# sets the new references with their digests. Flux applies the PR after the
+# merge.
 #
 # The secret MY_PAT is a token that can push a branch to home-ops and open a
-# PR there. It is the secret that the other projects use.
+# PR there. The other projects use the same secret.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
@@ -14,8 +15,9 @@ on:
 permissions:
   contents: read
 
+# Its own group: a release must not be cancelled by a newer CI run.
 concurrency:
-  group: arc-jmn-nix
+  group: release
   cancel-in-progress: false
 
 env:
@@ -36,6 +38,13 @@ jobs:
       version: ${{ steps.push.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A tag on another branch must not publish images.
+      - name: The tag is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - uses: ./.github/actions/setup-nix
 
@@ -48,7 +57,7 @@ jobs:
           nix build .#sandbox-image --no-link
           nix build .#hermes-image --no-link
 
-      # A scan before the push: a failed scan keeps the image off the registry.
+      # Scan the images before the push. A failed scan keeps the image off the registry.
       # The scan looks at the tarball, so it needs no registry and no daemon.
       - name: Scan the images
         run: |
@@ -86,9 +95,11 @@ jobs:
             echo "- \`$hermes_ref\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # If this job fails, the images are on ghcr.io already. Run the job again.
   gitops:
     needs: publish
     runs-on: arc-jmn-nix
+    timeout-minutes: 10
     permissions:
       contents: read
     env:
@@ -97,9 +108,12 @@ jobs:
       SANDBOX_REF: ${{ needs.publish.outputs.sandbox-ref }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           repository: jaimemachadoneto/home-ops
           token: ${{ secrets.MY_PAT }}
           path: gitops
@@ -128,4 +142,4 @@ jobs:
             - Source: ${{ github.server_url }}/${{ github.repository }}/tree/v${{ needs.publish.outputs.version }}
             - Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            A new sandbox image needs a new Nix base before sandboxes use it. Flux applies this PR after the merge.
+            Flux applies this PR after the merge.

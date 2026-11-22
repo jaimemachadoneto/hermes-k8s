@@ -92,8 +92,12 @@ def test_set_image_refs_fails_when_the_file_has_no_hermes_image(tmp_path):
     assert result.returncode != 0
 
 
-def test_set_image_refs_accepts_the_vap_pattern(tmp_path):
-    assert vap_rules.IMAGE_PATTERN.fullmatch(SANDBOX)
+def test_the_sandbox_reference_of_the_script_matches_the_vap_pattern(tmp_path):
+    result, target = set_refs(tmp_path, f"sha-abc@{OTHER}", SANDBOX)
+
+    assert result.returncode == 0
+    line = next(x for x in target.read_text().splitlines() if "HERMES_K8S_SANDBOX_IMAGE" in x)
+    assert vap_rules.IMAGE_PATTERN.fullmatch(line.split(": ", 1)[1])
 
 
 # --- publish-image.sh ----------------------------------------------------------------------

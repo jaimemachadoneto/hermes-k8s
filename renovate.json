@@ -1,13 +1,41 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>jaimemachado/renovate-config", "helpers:pinGitHubActionDigestsToSemver"],
-  "nix": { "enabled": true },
-  "lockFileMaintenance": { "enabled": true, "schedule": ["before 6am on monday"] },
+  "extends": [
+    "github>jaimemachado/renovate-config",
+    "helpers:pinGitHubActionDigestsToSemver"
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 6am on monday"
+    ]
+  },
   "packageRules": [
     {
-      "description": "ADR 0009: Hermes stays on a v0.x.y tag. A calendar tag (v2026.x.y) is older than the v0.2x.y tags.",
-      "matchPackageNames": ["NousResearch/hermes-agent"],
-      "allowedVersions": "/^v0\\.\\d+\\.\\d+$/"
+      "description": "ADR 0009: Hermes stays on a v0.x.y tag. A calendar tag (v2026.x.y) has a higher number than the v0.2x.y tags, but it is older.",
+      "matchPackageNames": [
+        "NousResearch/hermes-agent"
+      ],
+      "allowedVersions": "/^v0\\.\\d+\\.\\d+$/",
+      "groupName": "hermes-agent"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The Hermes tag in the flake and in pyproject.toml. Bump both together, then run `nix flake update hermes` and `uv lock`.",
+      "managerFilePatterns": [
+        "/^flake\\.nix$/",
+        "/^pyproject\\.toml$/"
+      ],
+      "matchStrings": [
+        "hermes-agent[/\"][^\\n]*?(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "NousResearch/hermes-agent",
+      "datasourceTemplate": "github-tags"
     }
   ]
 }

@@ -3,8 +3,8 @@
 
 Usage: check-vap-drift.py PATH-TO-validatingadmissionpolicy.yaml
 
-This checks the image pattern only. The other rules are CEL code that has no cheap
-Python equivalent. A change to them still needs a human to compare.
+This checks the image pattern only. The other rules are CEL code that has no simple
+Python equivalent. When one of them changes, compare it by hand.
 """
 
 import re

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build one image of the flake and push it to a registry. Print the reference
-# `IMAGE:FIRST_TAG@sha256:...` on stdout. The cluster pins an image by digest,
+# This script builds one image of the flake and pushes it to a registry. It
+# prints the reference `IMAGE:FIRST_TAG@sha256:...` on stdout. The cluster pins an image by digest,
 # so the caller reads the digest from this line.
 #
 # Usage: publish-image.sh ATTR IMAGE TAG [TAG...]
@@ -16,8 +16,8 @@ shift 2
 cd "$(dirname "$0")/.."
 out=$(nix build ".#$attr" --no-link --print-out-paths)
 
-# The login file is temporary: the token must not stay on disk. Every skopeo
-# call is checked by `set -e`, so a failed push is never hidden.
+# The login file is temporary: the token must not stay on disk. `set -e` stops
+# the script when a skopeo call fails, so a failed push is never hidden.
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 auth=$work/auth.json

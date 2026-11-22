@@ -1,7 +1,8 @@
 name: ci
 
-# The checks of a pull request on the runner arc-jmn-nix. The Nix store of the
-# runner persists, so a pull request from a fork never runs here.
+# This workflow checks each pull request on the runner arc-jmn-nix. The Nix
+# store of the runner keeps its data between runs, so a pull request from a
+# fork never runs here.
 on:
   pull_request:
   push:

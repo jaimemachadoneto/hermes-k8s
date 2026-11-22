@@ -29,16 +29,16 @@
     "nix build .#hermes-image --no-link"
   ];
 
-  # Manual push of the images. The token of `gh` needs the scope `write:packages`.
-  # `scripts/publish-image.sh` keeps the login in a temporary file, stops when
-  # skopeo fails, and prints `image:tag@sha256:...`. The cluster pins an image by
+  # Use these verbs to push the images by hand. The token of `gh` needs the scope `write:packages`.
+  # `scripts/publish-image.sh` keeps the login in a temporary file. It stops
+  # when skopeo fails. It prints `image:tag@sha256:...`. The cluster pins an image by
   # that digest. The packages on ghcr.io stay private. CI uses the same script.
   base.commands.push-image = [
     ''
       set -eo pipefail
       out=$(nix build .#sandbox-image --no-link --print-out-paths)
       REGISTRY_USER=$(gh api user --jq .login) REGISTRY_TOKEN=$(gh auth token) \
-        scripts/publish-image.sh sandbox-image ghcr.io/jaimemachadoneto/hermes-sandbox "$(basename "$out" | cut -c1-12)"
+        "$DEVENV_ROOT/scripts/publish-image.sh" sandbox-image ghcr.io/jaimemachadoneto/hermes-sandbox "$(basename "$out" | cut -c1-12)"
     ''
   ];
 
@@ -47,12 +47,13 @@
       set -eo pipefail
       out=$(nix build .#hermes-image --no-link --print-out-paths)
       REGISTRY_USER=$(gh api user --jq .login) REGISTRY_TOKEN=$(gh auth token) \
-        scripts/publish-image.sh hermes-image ghcr.io/jaimemachadoneto/hermes "$(basename "$out" | cut -c1-12)"
+        "$DEVENV_ROOT/scripts/publish-image.sh" hermes-image ghcr.io/jaimemachadoneto/hermes "$(basename "$out" | cut -c1-12)"
     ''
   ];
 
-  # `deploy patch|minor|major` tags main as vX.Y.Z and pushes the tag. The
-  # workflow .github/workflows/release.yaml does the rest.
+  # `deploy patch|minor|major` tags the release branch as vX.Y.Z and pushes
+  # the tag. The workflow .github/workflows/release.yaml builds, scans and pushes
+  # the images and opens the PR in home-ops.
   base.release.enable = true;
 
   # env.DATABASE_URL = "...";
