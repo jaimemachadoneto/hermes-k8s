@@ -67,3 +67,12 @@ vulnerabilities:
       The metadata of hermes-agent says 0.0.0, but the image has Hermes v0.23.3. The fix
       is in 0.16.0.
     expired_at: 2026-12-22
+secrets:
+  # A false positive: a comment in upstream Hermes quotes the text `"type": "service_account",`
+  # as an example. The file has no key.
+  - id: gcp-service-account
+    paths: ["/nix/store/*-hermes-agent-0.0.0/lib/python3.14/site-packages/agent/redact_secret_sources.py"]
+    statement: >-
+      A comment in redact_secret_sources.py of upstream Hermes quotes the field name of a
+      service-account JSON. The file holds no key.
+    expired_at: 2026-12-22
