@@ -12,7 +12,10 @@
   # `check` stays the verb of the Python stack. This verb reads the image.
   base.commands.flake-check = [ "nix flake check" ];
 
-  base.commands.build = [ "nix build .#sandbox-image --no-link" ];
+  base.commands.build = [
+    "nix build .#sandbox-image --no-link"
+    "nix build .#hermes-image --no-link"
+  ];
 
   # Manual push of the sandbox image. The token of `gh` needs the scope
   # `write:packages`. It goes to skopeo through stdin, never to a file. The
@@ -21,6 +24,17 @@
     ''
       out=$(nix build .#sandbox-image --no-link --print-out-paths)
       ref="ghcr.io/jaimemachadoneto/hermes-sandbox:$(basename "$out" | cut -c1-12)"
+      gh auth token | skopeo login ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null
+      skopeo --insecure-policy copy --quiet --digestfile /dev/stdout "docker-archive:$out" "docker://$ref" | sed "s|^|$ref@|"
+    ''
+  ];
+
+  # Manual push of the Hermes image, the same way. The package on ghcr.io
+  # stays private.
+  base.commands.push-hermes-image = [
+    ''
+      out=$(nix build .#hermes-image --no-link --print-out-paths)
+      ref="ghcr.io/jaimemachadoneto/hermes:$(basename "$out" | cut -c1-12)"
       gh auth token | skopeo login ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null
       skopeo --insecure-policy copy --quiet --digestfile /dev/stdout "docker-archive:$out" "docker://$ref" | sed "s|^|$ref@|"
     ''

@@ -1,5 +1,6 @@
 # The images of hermes-k8s. `packages.<system>.sandbox-image` is the sandbox
-# image. `checks.<system>.sandbox-image` reads its configuration.
+# image and `packages.<system>.hermes-image` is the Hermes image. Each check
+# of the same name reads the configuration of its image.
 {
   description = "Images of hermes-k8s";
 
@@ -7,22 +8,62 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     # devenv moves fast, so take it from unstable.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # ADR 0006: the tag that the cluster runs. Never a calendar tag (v2026.x.y).
+    hermes.url = "github:NousResearch/hermes-agent/v0.23.3";
+    # ADR 0005: the subscription plugin, fetched by commit.
+    hermes-official-plugins = {
+      url = "github:NousResearch/hermes-official-plugins/269ddcbc8598ece2dc5bb82115ac68954bc4024f";
+      flake = false;
+    };
   };
 
   outputs =
-    { nixpkgs, nixpkgs-unstable, ... }:
+    {
+      nixpkgs,
+      nixpkgs-unstable,
+      hermes,
+      hermes-official-plugins,
+      ...
+    }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       pkgs-unstable = nixpkgs-unstable.legacyPackages.${system};
       sandbox-image = import ./nix/sandbox-image.nix { inherit pkgs pkgs-unstable; };
+      # Only claude-code is unfree, and only by its name.
+      pkgs-unfree = import nixpkgs-unstable {
+        inherit system;
+        config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "claude-code" ];
+      };
+      hermes-image = import ./nix/hermes-image.nix {
+        inherit pkgs;
+        hermes = hermes.packages.${system}.default;
+        claude-code = pkgs-unfree.claude-code;
+        subscription-plugin = hermes-official-plugins;
+      };
     in
     {
-      packages.${system}.sandbox-image = sandbox-image;
+      packages.${system} = {
+        inherit sandbox-image hermes-image;
+      };
 
-      checks.${system}.sandbox-image = import ./nix/sandbox-image-check.nix {
-        inherit pkgs;
-        image = sandbox-image;
+      checks.${system} = {
+        sandbox-image = import ./nix/sandbox-image-check.nix {
+          inherit pkgs;
+          image = sandbox-image;
+        };
+        hermes-image = import ./nix/hermes-image-check.nix {
+          inherit pkgs;
+          image = hermes-image;
+          claude-code = pkgs-unfree.claude-code;
+          minClaudeVersion = "2.1.321";
+          plugins = [
+            "disk-cleanup:disk-cleanup"
+            "security-guidance:security-guidance"
+            "claude-subscription-directsdk:claude-subscription-directsdk-experimental"
+            "k8s_sandbox:k8s_sandbox"
+          ];
+        };
       };
     };
 }
