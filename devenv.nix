@@ -38,6 +38,7 @@
       ref="ghcr.io/jaimemachadoneto/hermes:$(basename "$out" | cut -c1-12)"
       # The auth file is temporary: the token never stays on disk.
       auth=$(mktemp)
+      echo "{}" > "$auth"
       trap 'rm -f "$auth"' EXIT
       gh auth token | skopeo login --authfile "$auth" ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null
       digest=$(skopeo --insecure-policy copy --quiet --authfile "$auth" --digestfile /dev/stdout "docker-archive:$out" "docker://$ref")
