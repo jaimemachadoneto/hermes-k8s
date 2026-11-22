@@ -19,19 +19,27 @@ def test_the_nix_cache_answers_in_the_sandbox(make_env):
 def test_the_nix_cache_is_the_first_substituter(make_env):
     env = make_env()
 
-    result = env.execute("nix show-config | grep '^substituters'")
+    result = env.execute("nix config show substituters | awk '{print $1}'")
 
-    assert f"substituters = {NIX_CACHE} " in result["output"]
+    assert result["returncode"] == 0, result["output"]
+    assert result["output"].strip() == NIX_CACHE, result["output"]
 
 
 def test_a_package_that_is_not_in_the_image_comes_from_the_nix_cache(make_env):
     env = make_env(timeout=600)
 
-    # `--option substituters` names only the Nix cache, so the build fails
-    # when the cache does not serve the path. figlet is not in the sandbox image.
+    # The flake lookup of nixpkgs needs GitHub. The build of the package must
+    # use the Nix cache only: `--max-jobs 0` makes a cache miss fail the build,
+    # and `--option substituters` names no other cache.
+    package = "nixpkgs#figlet"
+    out = env.execute(f"nix eval --raw {package}.outPath")
+    assert out["returncode"] == 0, out["output"]
+    path = out["output"].strip().splitlines()[-1]
+    assert env.execute(f"test -e {path}")["returncode"] != 0, "figlet is already in the store"
+
     result = env.execute(
-        f"nix build --no-link --print-out-paths --option substituters {NIX_CACHE} nixpkgs#figlet"
+        f"nix build --no-link --max-jobs 0 --option substituters {NIX_CACHE} {package}"
     )
 
     assert result["returncode"] == 0, result["output"]
-    assert "/nix/store/" in result["output"]
+    assert env.execute(f"test -e {path}")["returncode"] == 0
