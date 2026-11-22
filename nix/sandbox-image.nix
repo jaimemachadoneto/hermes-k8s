@@ -29,14 +29,34 @@ let
     direnv
     pkgs-unstable.devenv
   ];
-in
-pkgs.dockerTools.buildLayeredImage {
-  name = "ghcr.io/jaimemachadoneto/hermes-sandbox";
+
+  # The builder of a Nix base (ADR 0003). The Nix base Job runs it, and the init step of a
+  # sandbox does the same copy in a shorter form.
+  builder = pkgs.writeShellApplication {
+    name = "nix-base-build";
+    runtimeInputs = with pkgs; [
+      coreutils
+      git
+      nix
+      pkgs-unstable.devenv
+    ];
+    text = builtins.readFile ./nix-base-build.sh;
+  };
+
   contents = tools ++ [
+    builder
     pkgs.dockerTools.binSh
     pkgs.dockerTools.caCertificates
     pkgs.tini
   ];
+
+  # The Nix database of the volume lists no path at the start. This file lists each store path
+  # of the image, so that Nix keeps the paths that the copy brings instead of fetching them.
+  registration = "${pkgs.closureInfo { rootPaths = contents; }}/registration";
+in
+pkgs.dockerTools.buildLayeredImage {
+  name = "ghcr.io/jaimemachadoneto/hermes-sandbox";
+  inherit contents;
   extraCommands = ''
     mkdir -p usr/bin workspace tmp home/sandbox etc/nix
 
@@ -52,6 +72,9 @@ pkgs.dockerTools.buildLayeredImage {
     # needs user namespaces, which the pod does not allow (ADR 0003).
     printf '%s\n' 'sandbox = false' 'build-users-group =' \
       'experimental-features = nix-command flakes' > etc/nix/nix.conf
+
+    # The init step of a sandbox and the builder read this file.
+    cp ${registration} etc/nix/registration
 
     ln -s ${pkgs.tini}/bin/tini usr/bin/tini
     ln -s ${pkgs.coreutils}/bin/env usr/bin/env
@@ -79,4 +102,7 @@ pkgs.dockerTools.buildLayeredImage {
       "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
     ];
   };
+}
+// {
+  inherit builder registration;
 }

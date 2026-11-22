@@ -6,6 +6,7 @@ let
   tools = [
     "git" "gh" "ssh" "bash" "sh" "ls" "find" "grep" "sed" "awk" "rg" "fd" "jq"
     "curl" "tar" "gzip" "unzip" "which" "python3" "nix" "devenv" "direnv" "tini"
+    "nix-base-build" "nix-store"
   ];
 in
 pkgs.runCommand "sandbox-image-check"
@@ -45,6 +46,7 @@ pkgs.runCommand "sandbox-image-check"
     resolve /etc/ssl/certs/ca-bundle.crt || fail "CA certificates are missing"
 
     grep -q '^[^:]*:x:10000:10000:' rootfs/etc/passwd || fail "no passwd entry for uid 10000"
+    grep -q '^/nix/store/' rootfs/etc/nix/registration || fail "no store paths in /etc/nix/registration"
     grep -q '^sandbox *= *false' rootfs/etc/nix/nix.conf || fail "nix.conf has no sandbox = false"
 
     [ "$failed" = 0 ] || exit 1
