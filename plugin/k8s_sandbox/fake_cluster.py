@@ -1,7 +1,7 @@
 """An in-memory cluster for tests.
 
-It keeps the Sandbox objects in a dict. Its exec runs a real `bash -c` in a
-temporary directory, so the commands behave as they do in a pod. The names follow
+It keeps the Sandbox objects in a dict. Its exec runs the `argv` as a real
+process in a temporary directory, so the commands behave as they do in a pod. The names follow
 what the agent-sandbox controller does: the pod has the name of the Sandbox, and
 the volume is `workspace-<sandbox name>`.
 """
@@ -59,6 +59,8 @@ class FakeSandbox:
 class FakeCluster:
     root: Path
     sandboxes: dict[str, FakeSandbox] = field(default_factory=dict)
+    # Set it to make each new sandbox stay without a ready pod.
+    never_ready: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def create_sandbox(self, name: str, *, image: str, labels: dict[str, str]) -> None:
@@ -70,7 +72,9 @@ class FakeCluster:
             # A login shell resets PATH. The image of a real sandbox puts its tools back
             # in its profile, so the fake does the same for the tools of the test process.
             (directory / ".bash_profile").write_text(f"export PATH={os.environ.get('PATH', '')}\n")
-            self.sandboxes[name] = FakeSandbox(name, image, dict(labels), directory)
+            self.sandboxes[name] = FakeSandbox(
+                name, image, dict(labels), directory, ready=not self.never_ready
+            )
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
         sandbox = self.sandboxes.get(name)
@@ -140,7 +144,7 @@ class FakeCluster:
 
 
 def _kill(proc: subprocess.Popen) -> str:
-    """Stop the process group, and return the output that it wrote before."""
+    """Stop the process group, and return the output that it wrote before the stop."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:

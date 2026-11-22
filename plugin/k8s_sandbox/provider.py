@@ -1,8 +1,8 @@
 """The provider that registers the backend `k8s_sandbox` in Hermes."""
 
 # pyright: reportIncompatibleMethodOverride=false, reportAssignmentType=false
-# Hermes declares `name` as a property and `create_environment` with no return type, but
-# its own docs and plugins set a class attribute and return an environment.
+# Hermes types `name` as a property and `create_environment` with no return value, but
+# its own documentation sets a class attribute and returns an environment.
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -14,7 +14,7 @@ from .cluster import Cluster
 from .environment import K8sSandboxEnvironment
 
 # The GitHub tokens stay in the Secret of the sandbox namespace (ADR 0008). Hermes
-# keeps its own copies for its own features, so it must hide them from commands.
+# keeps its own copies for its own features, so the backend hides them from commands.
 GITHUB_KEYS = frozenset({"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_TOKEN_PERSONAL"})
 
 
@@ -23,7 +23,7 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
     display_name = "Kubernetes sandbox"
     is_remote = True
     is_container = True
-    # A sandbox is found again by its name, so two ephemeral sessions must not share one.
+    # The plugin finds a sandbox by its name, so two non-persistent sessions must not share one.
     session_isolated_when_nonpersistent = True
 
     def __init__(self, cluster_factory: Callable[[], Cluster] | None = None, image: str = ""):
@@ -51,10 +51,14 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
     ):
         if self._cluster_factory is None:
             raise RuntimeError("k8s_sandbox has no cluster client configured")
+        image = image or self._image
+        if not image:
+            raise ValueError("k8s_sandbox has no sandbox image configured")
         return K8sSandboxEnvironment(
             cluster=self._cluster_factory(),
             task_id=task_id,
-            image=image or self._image,
+            image=image,
             cwd=cwd,
             timeout=timeout,
+            **({"ready_timeout": kwargs["ready_timeout"]} if "ready_timeout" in kwargs else {}),
         )

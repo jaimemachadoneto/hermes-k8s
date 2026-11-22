@@ -1,6 +1,6 @@
 # pyright: reportAttributeAccessIssue=false
 # The registry of Hermes exports its functions with a call at import time.
-"""Fixtures that create the environment the way Hermes does (Seam 1)."""
+"""Fixtures that create the environment the way Hermes does (the factory of Hermes)."""
 
 import pytest
 from agent import terminal_env_registry
@@ -26,14 +26,14 @@ def registered(cluster):
 
 @pytest.fixture
 def make_env(registered):
-    """Call the factory of Hermes for the backend. Clean up each environment at the end."""
+    """Call the factory of Hermes for the backend. Clean each environment at the end."""
     made = []
 
-    def make(task_id="task-1", timeout=30):
+    def make(task_id="task-1", timeout=30, cwd=None):
         env = _create_environment(
             env_type=registered.name,
             image="",
-            cwd=registered.default_cwd,
+            cwd=cwd or registered.default_cwd,
             timeout=timeout,
             task_id=task_id,
             container_config={},

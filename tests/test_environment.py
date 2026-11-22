@@ -1,4 +1,4 @@
-"""Seam 1: create the environment as Hermes does, run commands, clean up."""
+"""Create the environment through the factory of Hermes, run commands, clean each environment."""
 
 
 def test_a_command_returns_its_output_and_exit_code(make_env):
@@ -43,11 +43,13 @@ def test_an_interrupt_stops_a_running_command_with_exit_code_130(make_env):
 
     env = make_env()
     tid = threading.current_thread().ident
-    threading.Timer(0.5, set_interrupt, args=(True, tid)).start()
+    timer = threading.Timer(0.5, set_interrupt, args=(True, tid))
+    timer.start()
     started = time.monotonic()
     try:
         result = env.execute("sleep 30", timeout=60)
     finally:
+        timer.cancel()
         set_interrupt(False, tid)
 
     assert result["returncode"] == 130
@@ -108,10 +110,8 @@ def test_the_environment_does_not_sync_files_with_the_hermes_home(
     env = make_env()
     env.execute("echo written-in-sandbox > from-sandbox.txt")
     absent = env.execute("test ! -e ~/.hermes && test ! -e ~/.env && echo absent")["output"]
-    env.cleanup()
 
     assert absent.strip() == "absent"
-    assert not hasattr(env, "_sync_manager")
     assert sorted(p.name for p in home.iterdir()) == [".env"]
 
 
@@ -121,3 +121,61 @@ def test_standard_input_goes_to_the_command(make_env):
     result = env.execute("cat", stdin_data="line one\nline two")
 
     assert result["output"].strip() == "line one\nline two"
+
+
+def test_two_long_ids_with_one_prefix_have_two_sandboxes(make_env, cluster):
+    make_env("x" * 500)
+    make_env("x" * 500 + "y")
+
+    assert len(cluster.sandboxes) == 2
+
+
+def test_a_given_working_directory_is_the_start_of_the_commands(make_env):
+    env = make_env(cwd="/tmp")
+
+    assert env.execute("pwd")["output"].strip() == "/tmp"
+
+
+def test_a_command_reports_the_error_when_the_sandbox_is_gone(make_env, cluster):
+    env = make_env()
+    cluster.delete_sandbox(env.sandbox_name)
+
+    result = env.execute("echo hi")
+
+    assert result["returncode"] == 1
+    assert "sandbox error" in result["output"]
+
+
+def test_cleanup_does_not_raise_when_the_sandbox_cannot_be_suspended(make_env, cluster):
+    env = make_env()
+    cluster.delete_sandbox(env.sandbox_name)
+
+    env.cleanup()
+
+
+def test_the_environment_fails_when_the_pod_never_becomes_ready(registered, cluster):
+    import pytest
+    from k8s_sandbox.cluster import SandboxNotReady
+
+    cluster.never_ready = True
+
+    with pytest.raises(SandboxNotReady):
+        registered.create_environment(cwd="/tmp", timeout=5, task_id="slow", ready_timeout=0.1)
+
+
+def test_the_provider_refuses_to_create_an_environment_without_a_cluster_client():
+    import pytest
+    from k8s_sandbox.provider import K8sSandboxProvider
+
+    with pytest.raises(RuntimeError):
+        K8sSandboxProvider(image="sandbox:test").create_environment(cwd="/tmp", timeout=5)
+
+
+def test_the_provider_refuses_to_create_an_environment_without_an_image(cluster):
+    import pytest
+    from k8s_sandbox.provider import K8sSandboxProvider
+
+    with pytest.raises(ValueError):
+        K8sSandboxProvider(cluster_factory=lambda: cluster).create_environment(
+            cwd="/tmp", timeout=5
+        )

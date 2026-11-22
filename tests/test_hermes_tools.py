@@ -1,6 +1,7 @@
-"""Seam 1 at the level of the Hermes tools: `terminal` and `execute_code` choose the backend."""
+"""The factory of Hermes, seen through the Hermes tools: `terminal` and `execute_code` choose the backend."""
 
 import json
+import os
 
 import pytest
 from tools import terminal_tool as terminal_module
@@ -22,7 +23,7 @@ def hermes(registered, monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     terminal_module._active_environments.clear()
     yield
-    # The kernel of execute_code lives in the temp directory of the sandbox. The fake
+    # The code kernel of execute_code lives in the temp directory of the sandbox. The fake
     # shares that directory with the host, so stop the kernel before the test ends.
     shutdown_all_remote_kernels()
     cleanup_all_environments()
@@ -30,10 +31,15 @@ def hermes(registered, monkeypatch, tmp_path):
 
 
 def run(command, *, session, task_id="main"):
-    import os
-
+    previous = os.environ.get("HERMES_SESSION_KEY")
     os.environ["HERMES_SESSION_KEY"] = session
-    return json.loads(terminal_tool(command, task_id=task_id))
+    try:
+        return json.loads(terminal_tool(command, task_id=task_id))
+    finally:
+        if previous is None:
+            os.environ.pop("HERMES_SESSION_KEY", None)
+        else:
+            os.environ["HERMES_SESSION_KEY"] = previous
 
 
 def test_each_session_gets_its_own_sandbox_and_a_subagent_shares_the_one_of_its_parent(
@@ -54,12 +60,12 @@ def test_execute_code_runs_through_the_sandbox(hermes, cluster, monkeypatch):
 
     result = json.loads(
         execute_code(
-            "import os\nprint('home', os.path.expanduser('~'))\nprint(2 + 3)", task_id="main"
+            "import os\nprint('home', os.path.expanduser('~'))\nprint('sum', 2 + 3)", task_id="main"
         )
     )
 
     assert result["status"] == "success", result
-    assert "5" in result["output"]
+    assert "sum 5" in result["output"].splitlines()
     (sandbox,) = cluster.sandboxes.values()
     # The home of the code is the home of the sandbox, not the home of the test process.
     assert f"home {sandbox.directory}" in result["output"]

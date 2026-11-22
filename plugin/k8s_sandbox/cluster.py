@@ -30,7 +30,7 @@ def sandbox_name(task_id: str) -> str:
 
 
 class ClusterError(RuntimeError):
-    """The cluster refused or failed an operation."""
+    """The cluster refuses or fails an operation."""
 
 
 class SandboxNotFound(ClusterError):
@@ -38,7 +38,7 @@ class SandboxNotFound(ClusterError):
 
 
 class SandboxNotReady(ClusterError):
-    """The sandbox did not become ready before the deadline."""
+    """The sandbox does not become ready before the deadline."""
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,10 @@ class CancelToken:
 
 
 class Cluster(Protocol):
-    """Six operations are enough for the life of a sandbox."""
+    """The port has six operations. They create, find, wait for, run in, suspend and delete a sandbox.
+
+    Each operation raises a `ClusterError` (or a subclass) when the cluster fails it.
+    """
 
     def create_sandbox(self, name: str, *, image: str, labels: dict[str, str]) -> None:
         """Create the Sandbox. Do nothing when it exists already."""
@@ -97,7 +100,8 @@ class Cluster(Protocol):
     ) -> ExecResult:
         """Run `argv` in the pod of the Sandbox. Stderr joins the output.
 
-        Return exit code 130 when `cancel` is set, and 124 after `timeout` seconds.
+        When `cancel` is set, return exit code 130. After `timeout` seconds, return exit code 124.
+        Raise `SandboxNotFound` when the Sandbox does not exist, and `ClusterError` when it has no pod.
         """
         ...
 

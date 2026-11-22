@@ -7,7 +7,7 @@ import logging
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 
-from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, sandbox_name
+from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,8 @@ class K8sSandboxEnvironment(BaseEnvironment):
     """One sandbox for one task id.
 
     The base class keeps the working directory and the exported variables between
-    commands. It does not sync files with the Hermes home (ADR 0004): this class
+    commands. Two environments of one task id share one sandbox, so call `cleanup` only
+    when the session ends. It does not sync files with the Hermes home (ADR 0004): this class
     makes no `FileSyncManager`. It sends no secret with a command (ADR 0008).
     """
 
@@ -68,14 +69,22 @@ class K8sSandboxEnvironment(BaseEnvironment):
             timeout=30,
             cancel=CancelToken(),
         )
-        return result.output.strip() or cwd
+        home = result.output.strip()
+        if result.exit_code != 0 or not home:
+            raise ClusterError(f"cannot read the home of sandbox {self.sandbox_name}")
+        return home
 
     def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
         cancel = CancelToken()
         argv = ["bash", *(["-l"] if login else []), "-c", cmd_string]
 
         def exec_fn() -> tuple[str, int]:
-            result = self._cluster.exec(self.sandbox_name, argv, timeout=timeout, cancel=cancel)
+            try:
+                result = self._cluster.exec(self.sandbox_name, argv, timeout=timeout, cancel=cancel)
+            except ClusterError as error:
+                # The handle of Hermes turns an exception into exit code 1 with no text.
+                logger.warning("exec in sandbox %s failed: %s", self.sandbox_name, error)
+                return f"sandbox error: {error}", 1
             return result.output, result.exit_code
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel.cancel)
