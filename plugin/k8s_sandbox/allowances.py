@@ -13,7 +13,8 @@ from collections.abc import Iterable, Mapping
 LABEL_PREFIX = "hermes-k8s/allow-"
 SETTING = "service_allowances"
 
-# The name part of a label key has at most 63 characters, and the prefix of the key takes 6.
+# The name part of a label key has a maximum of 63 characters. The text `allow-` uses 6 of them,
+# so a service name has a maximum of 57 characters.
 _SERVICE = re.compile(r"[a-z0-9]([a-z0-9-]{0,55}[a-z0-9])?")
 
 
@@ -31,7 +32,7 @@ def services_for_profile(setting: object, profile: str) -> list[str]:
     """Return the services that the setting gives to `profile`.
 
     No setting, or no entry for the profile, gives no service. An entry that is not a list of
-    strings is a mistake of the operator, so raise ValueError and do not guess.
+    strings is an error of the operator. Raise ValueError. Do not guess.
     """
     if not isinstance(setting, Mapping) or profile not in setting:
         return []

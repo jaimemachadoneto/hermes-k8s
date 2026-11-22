@@ -10,7 +10,7 @@ LITELLM = "http://litellm.ai.svc.cluster.local:4000/health/liveliness"
 CURL = "curl -s -m 8 -o /dev/null -w '%{http_code}' " + LITELLM
 
 
-def test_litellm_answers_a_sandbox_that_has_the_allowance(make_env, allowed_services, cluster):
+def test_litellm_answers_a_sandbox_that_has_the_allowance(make_env, allowed_services):
     allowed_services.append("litellm")
     env = make_env("allowed")
 

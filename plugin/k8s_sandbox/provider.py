@@ -52,7 +52,7 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
         return "~"
 
     def service_allowances(self) -> list[str]:
-        """The services that the sandboxes of the current profile may reach (ADR 0007)."""
+        """Return the services that the sandboxes of the current profile can reach (ADR 0007)."""
         return self._allowances() if self._allowances else []
 
     def is_available(self) -> bool:

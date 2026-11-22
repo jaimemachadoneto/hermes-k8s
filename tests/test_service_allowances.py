@@ -1,5 +1,5 @@
 # pyright: reportAttributeAccessIssue=false
-# The registry of Hermes exports its functions with a call at import time.
+# The registry of Hermes adds its functions when Python imports it.
 """Service allowances (ADR 0007): the setting of a profile becomes labels on the sandbox pod."""
 
 from pathlib import Path
@@ -55,13 +55,20 @@ def test_the_pod_template_of_the_sandbox_carries_each_label():
     assert violations(sandbox) == []
 
 
-def test_the_admission_policy_refuses_a_label_that_it_does_not_know():
-    labels = {"hermes-task": "hermes-abc", **allowance_labels(["unknown-service"])}
-    other = {"hermes-task": "hermes-abc", "app.kubernetes.io/name": "litellm"}
+@pytest.mark.parametrize(
+    "labels",
+    [
+        allowance_labels(["unknown-service"]),
+        {"app.kubernetes.io/name": "litellm"},
+    ],
+    ids=["unknown allowance", "label of another workload"],
+)
+def test_the_admission_policy_refuses_a_label_that_it_does_not_know(labels):
+    sandbox = build_sandbox(
+        "hermes-abc", image=IMAGE, labels={"hermes-task": "hermes-abc", **labels}
+    )
 
-    for bad in (labels, other):
-        sandbox = build_sandbox("hermes-abc", image=IMAGE, labels=bad)
-        assert violations(sandbox) == ["labels"]
+    assert violations(sandbox) == ["labels"]
 
 
 def test_the_services_of_a_profile_come_from_the_map_of_the_setting():
@@ -84,7 +91,7 @@ def test_a_service_list_that_is_not_a_list_of_names_is_refused():
 
 
 @pytest.mark.parametrize("name", ["", "Lite LLM", "a/b", "-x", "x-", "a" * 60, "x=true"])
-def test_a_service_name_that_is_not_a_label_value_is_refused(name):
+def test_a_service_name_that_is_not_valid_in_a_label_key_is_refused(name):
     with pytest.raises(ValueError, match="service"):
         allowance_labels([name])
 
@@ -137,3 +144,43 @@ def test_the_plugin_gives_no_allowance_to_a_profile_that_the_setting_does_not_na
 
 def test_the_plugin_gives_no_allowance_when_the_config_has_no_setting(discovered):
     assert discovered({}, "work").service_allowances() == []
+
+
+def test_a_service_name_of_57_characters_is_valid_and_one_of_58_is_not():
+    assert allowance_labels(["a" * 57]) == {f"hermes-k8s/allow-{'a' * 57}": "true"}
+    assert allowance_labels(["a"]) == {"hermes-k8s/allow-a": "true"}
+    with pytest.raises(ValueError, match="service"):
+        allowance_labels(["a" * 58])
+
+
+def test_the_plugin_uses_the_default_profile_when_no_profile_is_named(discovered, monkeypatch):
+    provider = discovered({"service_allowances": {"default": ["litellm"]}}, "unused")
+    monkeypatch.delenv("HERMES_PROFILE_NAME")
+
+    assert provider.service_allowances() == ["litellm"]
+
+
+def test_a_malformed_setting_stops_the_sandbox_and_names_the_profile(discovered, tmp_path):
+    provider = discovered({"service_allowances": {"work": ["Bad Name"]}}, "work")
+    cluster = FakeCluster(root=tmp_path / "cluster")
+    provider._cluster_factory = lambda: cluster
+
+    with pytest.raises(ValueError, match="'work'"):
+        provider.create_environment(cwd="/tmp", timeout=5, task_id="t")
+    assert cluster.sandboxes == {}
+
+
+def test_a_resumed_sandbox_keeps_its_labels(tmp_path):
+    cluster = FakeCluster(root=tmp_path)
+    granted = ["litellm"]
+    provider = K8sSandboxProvider(
+        cluster_factory=lambda: cluster, image=IMAGE, allowances=lambda: granted
+    )
+    first = provider.create_environment(cwd="/tmp", timeout=5, task_id="t")
+    first.cleanup()
+    granted.clear()
+
+    provider.create_environment(cwd="/tmp", timeout=5, task_id="t")
+
+    (sandbox,) = cluster.sandboxes.values()
+    assert sandbox.labels[LABEL] == "true"

@@ -21,8 +21,8 @@ _SCHEDULING_FIELDS = (
     "shareProcessNamespace",
 )
 # The labels of the pod that the policy accepts: the task label, and one allowance label for each
-# service that has a CiliumNetworkPolicy in home-ops. A new service needs a new entry here, in the
-# policy and in its own policy.
+# service that has a CiliumNetworkPolicy in home-ops. For a new service, add a key here, in the
+# admission policy and in the CiliumNetworkPolicy of the service.
 ALLOWED_LABELS = frozenset({"hermes-task", "hermes-k8s/allow-litellm"})
 _GIB = 1024**3
 

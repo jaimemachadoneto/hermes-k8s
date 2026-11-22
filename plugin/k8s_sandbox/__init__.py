@@ -4,11 +4,14 @@ import functools
 import logging
 import os
 
-from .allowances import SETTING, services_for_profile
+from .allowances import SETTING, allowance_labels, services_for_profile
 from .kubernetes_cluster import KubernetesCluster
 from .provider import K8sSandboxProvider
 
 logger = logging.getLogger(__name__)
+
+# The name that Hermes gives to the profile of the Hermes home that is not in `profiles/`.
+DEFAULT_PROFILE = "default"
 
 
 @functools.cache
@@ -27,7 +30,13 @@ def register(ctx) -> None:
         # Read at each sandbox, because one Hermes process can serve more than one profile.
         from hermes_cli.profiles import current_profile_name
 
-        profile = current_profile_name("default") or "default"
-        return services_for_profile(ctx.get_config(SETTING), profile)
+        profile = current_profile_name(DEFAULT_PROFILE) or DEFAULT_PROFILE
+        services = services_for_profile(ctx.get_config(SETTING), profile)
+        try:
+            allowance_labels(services)
+        except ValueError as error:
+            # The operator must see which profile has the wrong entry.
+            raise ValueError(f"{SETTING} of the profile {profile!r}: {error}") from error
+        return services
 
     ctx.register_terminal_environment_provider(K8sSandboxProvider(_cluster, image, allowances))
