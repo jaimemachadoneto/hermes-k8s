@@ -36,7 +36,8 @@ _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
 # The Job that builds a Nix base writes the marker too (`nix-base-build` in the image).
 # Nix knows a store path only when its database lists the path. The image has the list of its
 # own paths at /etc/nix/registration, and the step loads it into the database of the volume.
-# Without it, Nix downloads each path of the image again.
+# Without it, Nix downloads each path of the image again. The store of the image is read-only, and
+# Nix writes `.links` into the store that it opens, so the store URL names the volume as the root.
 _COPY_CLOSURE = """\
 set -eu
 mkdir -p /data/nix /data/workspace
@@ -51,8 +52,7 @@ if [ ! -e /data/nix/.closure-copied ]; then
     rm -rf /data/nix/store
   fi
   cp -a --no-preserve=ownership /nix/store /data/nix/store
-  NIX_STATE_DIR=/data/nix/var/nix NIX_LOG_DIR=/data/nix/var/log/nix \\
-    nix-store --load-db < /etc/nix/registration
+  nix-store --store 'local?root=/data' --load-db < /etc/nix/registration
   touch /data/nix/.closure-copied
 fi
 """
