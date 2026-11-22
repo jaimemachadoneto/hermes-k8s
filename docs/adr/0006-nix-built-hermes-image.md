@@ -1,4 +1,11 @@
+---
+status: superseded by ADR-0009
+---
+
 # The Hermes image is built with Nix from the Hermes flake
+
+ADR 0009 replaces this ADR. The image has node, so the consequence "no
+node" below is wrong.
 
 The Hermes image is built with `dockerTools` from the `default` package of
 the Hermes flake at the tag that the cluster runs (`v0.23.3`). That package
