@@ -61,7 +61,11 @@ class K8sSandboxEnvironment(BaseEnvironment):
                 labels={"hermes-task": self.sandbox_name},
                 nix_base=nix_base,
             )
-            logger.info("Created sandbox %s from Nix base %s", self.sandbox_name, nix_base)
+            logger.info(
+                "Created sandbox %s with %s",
+                self.sandbox_name,
+                f"Nix base {nix_base}" if nix_base else "an empty volume",
+            )
         elif status.operating_mode == SUSPENDED:
             self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
             logger.info("Resumed sandbox %s", self.sandbox_name)

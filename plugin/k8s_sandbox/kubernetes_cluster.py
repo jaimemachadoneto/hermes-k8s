@@ -296,6 +296,8 @@ class KubernetesCluster:
                 ready=bool(item.get("status", {}).get("readyToUse")),
             )
             for item in result.get("items", [])
+            # The CSI driver keeps a snapshot that has a clone. Do not select it.
+            if not item["metadata"].get("deletionTimestamp")
         ]
 
     def delete_nix_base(self, name: str) -> None:

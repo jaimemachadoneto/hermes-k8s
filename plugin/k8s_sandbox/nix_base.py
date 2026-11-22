@@ -1,8 +1,9 @@
 """Which Nix base a new sandbox starts from, and which Nix bases the cluster keeps.
 
 A Nix base is a VolumeSnapshot with the labels below. The Nix base Job makes it from one
-sandbox image (ADR 0003), so the plugin selects it by the digest of that image. All the
-functions here are pure: they take the list that the cluster port returns.
+sandbox image (ADR 0003), so the plugin selects it by the digest of that image. The
+functions `image_digest_label`, `select_nix_base` and `nix_bases_to_delete` are pure: they take the
+list that the cluster port returns. `choose_nix_base` and `reap_nix_bases` call the cluster.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ _DIGEST = re.compile(r"@sha256:([a-f0-9]{64})$")
 KEEP_PER_IMAGE = 2
 # A Nix base that is not ready after this time did not finish. Its Job failed.
 NOT_READY_SECONDS = 24 * 3600.0
+# A Nix base is deleted only after this time: a new sandbox can still clone it from a list that
+# it read before the newest Nix base was ready.
+GRACE_SECONDS = 3600.0
 
 
 def image_digest_label(image: str) -> str:
@@ -63,8 +67,9 @@ def nix_bases_to_delete(
 ) -> list[str]:
     """Return the names of the Nix bases that the cluster does not need any more.
 
-    Keep the two newest ready Nix bases of each image, and a Nix base that is in the making.
-    The newest ready Nix base of the current image is always among the ones to keep.
+    Keep the two newest ready Nix bases of each image, every Nix base that is less than an hour
+    old, and a Nix base that is in the making. The newest ready Nix bases of the current image
+    are always among the ones to keep.
     """
     now = time.time() if now is None else now
     by_image: dict[str, list[NixBase]] = defaultdict(list)
@@ -73,11 +78,10 @@ def nix_bases_to_delete(
     doomed: list[str] = []
     for group in by_image.values():
         ready = _newest_first([b for b in group if b.ready])
-        doomed += [b.name for b in ready[KEEP_PER_IMAGE:]]
+        # A sandbox that chose an older Nix base needs it until its volume exists.
+        doomed += [b.name for b in ready[KEEP_PER_IMAGE:] if now - b.created > GRACE_SECONDS]
         doomed += [b.name for b in group if not b.ready and now - b.created > NOT_READY_SECONDS]
-    # A rule above must never take the Nix base that a new sandbox of the current image selects.
-    selected = select_nix_base(bases, current_image)
-    return [name for name in doomed if name != selected]
+    return doomed
 
 
 def choose_nix_base(cluster: Cluster, image: str) -> str | None:

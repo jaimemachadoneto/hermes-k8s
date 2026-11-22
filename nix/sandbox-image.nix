@@ -31,7 +31,7 @@ let
   ];
 
   # The builder of a Nix base (ADR 0003). The Nix base Job runs it, and the init step of a
-  # sandbox does the same copy in a shorter form.
+  # sandbox does the same copy with a shell script in `sandbox_spec.py`.
   builder = pkgs.writeShellApplication {
     name = "nix-base-build";
     runtimeInputs = with pkgs; [

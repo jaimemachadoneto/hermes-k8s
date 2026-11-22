@@ -55,7 +55,13 @@ def test_the_clean_up_keeps_the_two_newest_ready_bases_of_each_image():
     assert sorted(nix_bases_to_delete(bases, IMAGE, now=NOW)) == ["a2", "a3", "b2"]
 
 
-def test_the_clean_up_keeps_the_nix_base_of_the_current_image_when_it_is_the_only_one():
+def test_the_clean_up_keeps_a_ready_base_for_an_hour_even_when_it_is_not_among_the_two_newest():
+    bases = [base("a0", IMAGE, 0.01), base("a1", IMAGE, 0.02), base("a2", IMAGE, 0.03)]
+
+    assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
+
+
+def test_the_clean_up_keeps_the_only_nix_base_of_the_current_image_when_it_is_old():
     bases = [base("current", IMAGE, 90), base("n0", OTHER, 1), base("n1", OTHER, 2)]
 
     assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
@@ -104,10 +110,14 @@ def test_a_resumed_sandbox_keeps_its_volume_and_gets_no_new_nix_base(make_env, c
     first = make_env("task-a")
     cluster.nix_bases = [base("new", IMAGE, 1)]
     first.cleanup()
+    calls = []
+    original = cluster.create_sandbox
+    cluster.create_sandbox = lambda *a, **k: (calls.append(k), original(*a, **k))
 
     make_env("task-a")
 
     assert cluster.sandboxes[first.sandbox_name].nix_base is None
+    assert calls == []
 
 
 def test_creating_an_environment_deletes_the_old_bases(make_env, cluster):
@@ -129,6 +139,26 @@ def test_a_failed_clean_up_does_not_stop_the_sandbox(make_env, cluster):
     env = make_env()
 
     assert cluster.sandboxes[env.sandbox_name].nix_base == "a0"
+
+
+def test_a_failed_list_during_the_clean_up_does_not_stop_the_sandbox(make_env, cluster):
+    calls = []
+
+    def fail():
+        calls.append(1)
+        raise ClusterError("no access")
+
+    cluster.list_nix_bases = fail
+
+    env = make_env()
+
+    assert len(calls) == 2  # the clean up and the selection
+    assert cluster.sandboxes[env.sandbox_name].nix_base is None
+
+
+def test_the_digest_label_of_an_image_without_digest_is_refused():
+    with pytest.raises(ValueError, match="sha256"):
+        image_digest_label("ghcr.io/jaimemachadoneto/hermes-sandbox:1")
 
 
 def test_reap_returns_the_names_that_it_deleted(cluster):
@@ -156,6 +186,12 @@ def test_a_sandbox_with_a_nix_base_breaks_no_rule_of_the_policy():
     sandbox = build_sandbox("hermes-abc", image=IMAGE, labels={}, nix_base="nix-base-1")
 
     assert violations(sandbox) == []
+
+
+def test_a_nix_base_name_of_253_characters_is_valid_and_of_254_is_not():
+    build_sandbox("hermes-abc", image=IMAGE, labels={}, nix_base="a" * 253)
+    with pytest.raises(ValueError, match="Nix base"):
+        build_sandbox("hermes-abc", image=IMAGE, labels={}, nix_base="a" * 254)
 
 
 @pytest.mark.parametrize("name", ["", "A/b", "x" * 300])

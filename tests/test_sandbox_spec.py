@@ -119,7 +119,7 @@ def test_the_init_container_copies_the_closure_of_the_image_into_the_volume():
     assert ".closure-copied" in script
 
 
-def _run_init_script(tmp_path, *, marker, half_copy):
+def _run_init_script(tmp_path, *, marker, half_copy, load_db_fails=False):
     """Run the copy script with the paths /data and /nix/store moved into `tmp_path`."""
     import subprocess
 
@@ -142,6 +142,8 @@ def _run_init_script(tmp_path, *, marker, half_copy):
     bin_dir.mkdir()
     (bin_dir / "nix-store").write_text(
         f'#!/bin/sh\necho "$NIX_STATE_DIR $*" > {tmp_path}/load-db.args\ncat > {tmp_path}/load-db.input\n'
+        f'[ -e "{tmp_path}/data/nix/.closure-copied" ] && touch {tmp_path}/marker-early\n'
+        f'exit "${{STUB_EXIT:-0}}"\n'
     )
     (bin_dir / "nix-store").chmod(0o755)
     (tmp_path / "registration").write_text("registration of the image\n")
@@ -153,6 +155,8 @@ def _run_init_script(tmp_path, *, marker, half_copy):
     ):
         script = script.replace(placeholder, path)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    if load_db_fails:
+        env["STUB_EXIT"] = "1"
     subprocess.run(["sh", "-c", script], check=True, env=env)
     return data
 
@@ -170,6 +174,21 @@ def test_the_init_step_registers_the_paths_of_the_image_in_the_database_of_the_v
 
     assert (tmp_path / "load-db.args").read_text() == f"{data}/nix/var/nix --load-db\n"
     assert (tmp_path / "load-db.input").read_text() == "registration of the image\n"
+
+
+def test_the_init_step_writes_the_marker_only_after_the_database_is_loaded(tmp_path):
+    _run_init_script(tmp_path, marker=False, half_copy=False)
+
+    assert not (tmp_path / "marker-early").exists()
+
+
+def test_a_failed_load_of_the_database_leaves_no_marker(tmp_path):
+    import subprocess
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_init_script(tmp_path, marker=False, half_copy=False, load_db_fails=True)
+
+    assert not (tmp_path / "data" / "nix" / ".closure-copied").exists()
 
 
 def test_the_init_step_replaces_an_incomplete_copy(tmp_path):

@@ -7,9 +7,10 @@ runs `nix-base-build warm` with the volume at `/nix`, so that `devenv shell` run
 configured repository on the real paths of the store. The container `snapshot` makes the
 VolumeSnapshot (class `csi-ceph-blockpool`) with the labels `hermes-k8s/kind=nix-base` and
 `hermes-k8s/image-digest=<first 32 characters of the digest>`. It then deletes the volume to
-free the quota. The plugin selects the newest ready Nix base with the digest of its image. If
-none fits, the volume is empty. When it starts an environment, the plugin deletes the Nix
-bases except the two newest of each image.
+free the quota. The plugin selects the newest ready Nix base that has the label of the digest of the sandbox image. If
+no Nix base fits, the volume of the sandbox is empty. When it starts an environment, the plugin deletes the ready Nix
+bases except the two newest of each image. It also deletes a Nix base that is not ready after
+24 hours.
 
 ## Considered Options
 
@@ -27,7 +28,7 @@ bases except the two newest of each image.
 - The sandbox image has the list of its store paths at `/etc/nix/registration`. The init step
   of a sandbox and `nix-base-build copy` load it into the Nix database of the volume. Without
   it, Nix does not know the paths of the copy and downloads them again.
-- A Job in home-ops has the image digest in its own file. The digest of the Job must be
+- The Job has the image digest in `nix-base.yaml`, not in the HelmRelease. The digest of the Job must be
   the digest in the HelmRelease of Hermes, or the plugin finds no Nix base for its image.
 - The Nix base must fit in 20Gi, the maximum size of a sandbox volume in the admission policy.
 - Flux replaces the Job when the image changes (`kustomize.toolkit.fluxcd.io/force`), and

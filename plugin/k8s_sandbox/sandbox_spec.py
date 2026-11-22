@@ -42,7 +42,8 @@ if [ ! -e /data/nix/.closure-copied ]; then
 fi
 """
 
-# A Kubernetes name is at most 253 characters. The policy fixes the rest of the source.
+# A VolumeSnapshot name has at most 253 characters: lowercase letters, digits, '-' and '.'.
+# It starts and ends with a letter or a digit.
 _SNAPSHOT_NAME = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")
 
 

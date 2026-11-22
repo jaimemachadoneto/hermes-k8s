@@ -492,6 +492,38 @@ def test_delete_nix_base_deletes_the_snapshot_and_ignores_a_missing_one(make, cu
     assert custom.calls == [("delete", "a"), ("delete", "a")]
 
 
+def test_a_snapshot_that_is_being_deleted_is_not_a_nix_base(make, custom):
+    cluster, _ = make()
+    item = snapshot_object("a", "d" * 32, "2026-11-22T10:00:00Z")
+    item["metadata"]["deletionTimestamp"] = "2026-11-22T11:00:00Z"
+    custom.snapshots = [item, snapshot_object("b", "d" * 32, "2026-11-22T10:00:00Z")]
+
+    assert [b.name for b in cluster.list_nix_bases()] == ["b"]
+
+
+def test_a_refused_delete_of_a_nix_base_is_a_cluster_error(make, custom):
+    cluster, _ = make()
+    custom.objects["a"] = {}
+    custom.fail = None
+
+    def refuse(*args, **kw):
+        raise api_error(403, {"message": "forbidden"})
+
+    custom.delete_namespaced_custom_object = refuse
+
+    with pytest.raises(ClusterError, match="forbidden"):
+        cluster.delete_nix_base("a")
+
+
+def test_create_without_a_nix_base_sends_no_data_source(make, custom):
+    cluster, _ = make()
+
+    cluster.create_sandbox("hermes-a", image=IMAGE, labels={})
+
+    (call,) = custom.calls
+    assert "dataSource" not in call[5]["spec"]["volumeClaimTemplates"][0]["spec"]
+
+
 def test_create_with_a_nix_base_sends_the_data_source(make, custom):
     cluster, _ = make()
 
@@ -499,4 +531,8 @@ def test_create_with_a_nix_base_sends_the_data_source(make, custom):
 
     (call,) = custom.calls
     template = call[5]["spec"]["volumeClaimTemplates"][0]
-    assert template["spec"]["dataSource"]["name"] == "nix-base-1"
+    assert template["spec"]["dataSource"] == {
+        "apiGroup": "snapshot.storage.k8s.io",
+        "kind": "VolumeSnapshot",
+        "name": "nix-base-1",
+    }
