@@ -92,7 +92,7 @@ class StubCore:
 class FakeSocket:
     """A stand-in for the websocket of the exec call."""
 
-    def __init__(self, stdout=(), stderr=(), code=0, stays_open=False):
+    def __init__(self, stdout=(), stderr=(), code: int | None = 0, stays_open=False):
         self._out, self._err, self._code = list(stdout), list(stderr), code
         self._stays_open, self.closed = stays_open, False
 
@@ -174,6 +174,8 @@ def test_create_does_nothing_when_the_sandbox_exists(make, custom):
     custom.fail = api_error(409, {"reason": "AlreadyExists", "message": "exists"})
 
     cluster.create_sandbox("hermes-a", image=IMAGE, labels={})
+
+    assert custom.objects == {}
 
 
 def test_a_full_quota_gives_an_error_that_names_the_quota(make, custom):
@@ -316,3 +318,107 @@ def test_delete_removes_the_sandbox_and_its_volume_and_ignores_what_is_gone(make
 
     assert "hermes-a" not in custom.objects
     assert core.deleted == ["data-hermes-a", "data-hermes-a"]
+
+
+def test_a_suspended_sandbox_with_a_stale_ready_condition_is_not_ready(make, custom):
+    cluster, _ = make()
+    custom.objects["hermes-a"] = sandbox_object(mode="Suspended", ready="True")
+
+    status = cluster.get_sandbox("hermes-a")
+
+    assert status and not status.ready and status.suspended
+
+
+def test_a_sandbox_with_no_mode_runs(make, custom):
+    cluster, _ = make()
+    item = sandbox_object()
+    del item["spec"]["operatingMode"]
+    custom.objects["hermes-a"] = item
+
+    status = cluster.get_sandbox("hermes-a")
+
+    assert status and status.operating_mode == "Running" and status.ready
+
+
+def test_delete_ignores_a_volume_that_does_not_exist(make, custom, core):
+    cluster, _ = make()
+    custom.objects["hermes-b"] = sandbox_object()
+
+    cluster.delete_sandbox("hermes-b")
+
+    assert core.deleted == ["data-hermes-b"]
+
+
+def test_delete_and_set_mode_and_exec_raise_cluster_error_on_a_server_error(make, custom):
+    cluster, _ = make()
+    custom.objects["hermes-a"] = sandbox_object()
+    custom.delete_namespaced_custom_object = lambda *a, **k: (_ for _ in ()).throw(
+        api_error(500, {"message": "boom"})
+    )
+    custom.patch_namespaced_custom_object = custom.delete_namespaced_custom_object
+
+    with pytest.raises(ClusterError, match="boom"):
+        cluster.delete_sandbox("hermes-a")
+    with pytest.raises(ClusterError, match="boom"):
+        cluster.set_operating_mode("hermes-a", "Running")
+
+    def failing_exec(name, argv):
+        raise api_error(500, {"message": "boom"})
+
+    failing = KubernetesCluster(custom=custom, core=None, open_exec=failing_exec)
+    with pytest.raises(ClusterError) as caught:
+        failing.exec("hermes-a", ["x"], timeout=1, cancel=CancelToken())
+    assert not isinstance(caught.value, SandboxNotFound)
+
+
+def test_a_dropped_connection_gives_a_cluster_error(make, custom):
+    import urllib3.exceptions
+
+    def broken_exec(name, argv):
+        raise urllib3.exceptions.ProtocolError("reset")
+
+    cluster = KubernetesCluster(custom=custom, core=None, open_exec=broken_exec)
+    with pytest.raises(ClusterError, match="ProtocolError"):
+        cluster.exec("hermes-a", ["x"], timeout=1, cancel=CancelToken())
+
+    custom.get_namespaced_custom_object = lambda *a, **k: (_ for _ in ()).throw(OSError("down"))
+    with pytest.raises(ClusterError, match="OSError"):
+        cluster.get_sandbox("hermes-a")
+
+
+def test_exec_raises_when_the_socket_closes_without_an_exit_code(make):
+    cluster, _ = make(FakeSocket(stdout=[], code=None))
+
+    with pytest.raises(ClusterError, match="exit code"):
+        cluster.exec("hermes-a", ["x"], timeout=5, cancel=CancelToken())
+
+
+def test_exec_keeps_the_output_that_arrives_with_the_close_frame(make):
+    class ClosedWithOutput(FakeSocket):
+        def is_open(self):
+            return False
+
+    cluster, _ = make(ClosedWithOutput(stdout=["last\n"], stderr=["err\n"], code=0))
+
+    result = cluster.exec("hermes-a", ["x"], timeout=5, cancel=CancelToken())
+
+    assert (result.output, result.exit_code) == ("last\nerr\n", 0)
+
+
+def test_wait_ready_does_not_accept_a_pod_that_is_being_deleted(make, custom, core):
+    cluster, _ = make()
+    custom.objects["hermes-a"] = sandbox_object()
+    pod = core.read_namespaced_pod("hermes-a", "x")
+    pod.metadata.deletion_timestamp = "2026-01-01T00:00:00Z"
+    core.read_namespaced_pod = lambda *a, **k: pod
+
+    with pytest.raises(SandboxNotReady):
+        cluster.wait_ready("hermes-a", timeout=0.1)
+
+
+def test_an_error_with_a_body_that_is_not_json_still_gives_a_cluster_error(make, custom):
+    cluster, _ = make()
+    custom.fail = ApiException(status=500, reason="boom", body="<html>")
+
+    with pytest.raises(ClusterError, match="boom"):
+        cluster.create_sandbox("hermes-a", image=IMAGE, labels={})

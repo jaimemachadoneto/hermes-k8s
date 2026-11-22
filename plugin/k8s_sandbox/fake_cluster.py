@@ -26,9 +26,10 @@ from .cluster import (
     SandboxNotReady,
     SandboxStatus,
 )
+from .sandbox_spec import VOLUME
 
 _POLL_SECONDS = 0.02
-_TEMPLATE = "data"
+_TEMPLATE = VOLUME
 
 
 @dataclass

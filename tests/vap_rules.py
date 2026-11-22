@@ -2,13 +2,15 @@
 
 The source is `validatingadmissionpolicy.yaml` in home-ops. `fixtures/sandbox-good.yaml` is a
 copy of `tests/hermes-sandbox/sandbox-good.yaml` there. Change this file with the policy.
+The names of the rules: account, host, scheduling, volume, template, init, image, pull-secret and
+affinity. The quantities: only whole `Mi`, `Gi` and `Ti` values (the plugin sends `20Gi`).
 """
 
 import re
 
 IMAGE_PATTERN = re.compile(
-    r"^ghcr\.io/jaimemachadoneto/hermes-sandbox"
-    r"(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$"
+    r"ghcr\.io/jaimemachadoneto/hermes-sandbox"
+    r"(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}"
 )
 _SCHEDULING_FIELDS = (
     "tolerations",
@@ -51,12 +53,12 @@ def violations(sandbox: dict) -> list[str]:
             found.append("template")
     init = pod.get("initContainers", [])
     if "ephemeralContainers" in pod or (
-        init and (len(init) != 1 or init[0]["name"] != "copy-closure")
+        "initContainers" in pod and (len(init) != 1 or init[0]["name"] != "copy-closure")
     ):
         found.append("init")
     for container in pod["containers"] + init:
         if (
-            not IMAGE_PATTERN.match(container["image"])
+            not IMAGE_PATTERN.fullmatch(container["image"])
             or any("valueFrom" in e for e in container.get("env", []))
             or "envFrom" in container
         ):

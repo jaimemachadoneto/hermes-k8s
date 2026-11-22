@@ -118,6 +118,57 @@ def test_the_init_container_copies_the_closure_of_the_image_into_the_volume():
     assert ".closure-copied" in script
 
 
+def _run_init_script(tmp_path, *, marker, half_copy):
+    """Run the copy script with the paths /data and /nix/store moved into `tmp_path`."""
+    import subprocess
+
+    image_store, data = tmp_path / "image-store", tmp_path / "data"
+    (image_store / "pkg" / "bin").mkdir(parents=True)
+    (image_store / "pkg" / "bin" / "tool").write_text("tool")
+    (image_store / "pkg" / "bin").chmod(0o555)  # a read-only store, as in the image
+    if marker or half_copy:
+        (data / "nix" / "store" / "stale" / "sub").mkdir(parents=True)
+        (data / "nix" / "store" / "stale" / "sub" / "f").write_text("x")
+        (data / "nix" / "store" / "stale" / "sub").chmod(0o555)
+    if marker:
+        (data / "nix" / ".closure-copied").write_text("")
+    script = make()["spec"]["podTemplate"]["spec"]["initContainers"][0]["command"][-1]
+    # Move the paths into `tmp_path`. A placeholder stops one replacement from changing the result of the next.
+    script = script.replace("/data/nix/store", "@DST@").replace("/nix/store", "@SRC@")
+    script = script.replace("/data", "@DATA@")
+    for placeholder, path in (
+        ("@DST@", f"{data}/nix/store"),
+        ("@SRC@", str(image_store)),
+        ("@DATA@", str(data)),
+    ):
+        script = script.replace(placeholder, path)
+    subprocess.run(["sh", "-c", script], check=True)
+    return data
+
+
+def test_the_init_step_copies_the_store_into_an_empty_volume(tmp_path):
+    data = _run_init_script(tmp_path, marker=False, half_copy=False)
+
+    assert (data / "nix" / "store" / "pkg" / "bin" / "tool").read_text() == "tool"
+    assert (data / "nix" / ".closure-copied").exists()
+    assert (data / "workspace").is_dir() and (data / "home").is_dir()
+
+
+def test_the_init_step_replaces_an_incomplete_copy(tmp_path):
+    data = _run_init_script(tmp_path, marker=False, half_copy=True)
+
+    assert not (data / "nix" / "store" / "stale").exists()
+    assert (data / "nix" / "store" / "pkg" / "bin" / "tool").exists()
+    assert (data / "nix" / ".closure-copied").exists()
+
+
+def test_the_init_step_does_nothing_when_the_volume_has_the_marker(tmp_path):
+    data = _run_init_script(tmp_path, marker=True, half_copy=False)
+
+    assert (data / "nix" / "store" / "stale" / "sub" / "f").exists()
+    assert not (data / "nix" / "store" / "pkg").exists()
+
+
 def test_the_pod_has_no_service_account_token_secret_or_service_link():
     sandbox = make()
     pod = sandbox["spec"]["podTemplate"]["spec"]
@@ -150,6 +201,7 @@ def test_the_labels_go_to_the_sandbox_and_to_the_pod():
         "ghcr.io/jaimemachadoneto/hermes-sandbox:1.0.0",
         "ghcr.io/jaimemachadoneto/hermes-sandbox@sha256:abc",
         "ghcr.io/jaimemachadoneto/hermes-sandbox@sha512:" + "0" * 64,
+        "ghcr.io/jaimemachadoneto/hermes-sandbox@sha256:" + "0" * 64 + "\n",
         "",
     ],
 )

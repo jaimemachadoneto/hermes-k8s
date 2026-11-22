@@ -14,6 +14,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+import urllib3.exceptions
+import websocket
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 from kubernetes.stream import stream
@@ -28,7 +30,7 @@ from .cluster import (
     SandboxNotReady,
     SandboxStatus,
 )
-from .sandbox_spec import API_VERSION, NAMESPACE, SHELL, build_sandbox
+from .sandbox_spec import API_VERSION, NAMESPACE, SHELL, VOLUME, build_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,10 @@ def _quota_error(message: str) -> QuotaExceeded | None:
         f"the quota {match.group(1)} of the namespace {NAMESPACE} is full, "
         f"so the cluster cannot start a sandbox: {message}"
     )
+
+
+# A dropped connection is a cluster failure too. The port promises a ClusterError.
+_NETWORK_ERRORS = (OSError, urllib3.exceptions.HTTPError, websocket.WebSocketException)
 
 
 def _map(error: ApiException, what: str) -> ClusterError:
@@ -85,8 +91,8 @@ class KubernetesCluster:
 
     @classmethod
     def from_kubeconfig(cls, path: str | None = None) -> KubernetesCluster:
-        """Use the account of a kubeconfig file, or the account of the pod when `path` is None
-        and the code runs in a pod."""
+        """Return a cluster client. If `path` is None, use the account of the pod.
+        Otherwise use the kubeconfig file at `path`."""
         configuration = client.Configuration()
         if path is None:
             config.load_incluster_config(client_configuration=configuration)
@@ -97,7 +103,7 @@ class KubernetesCluster:
             return client.ApiClient(configuration)
 
         def open_exec(name: str, argv: list[str]):
-            # `stream` swaps a method of the client for the call, so each call gets its own client.
+            # `stream` replaces a method of the client during the call. Make a new client for each call.
             core = client.CoreV1Api(new_api())
             return stream(
                 core.connect_get_namespaced_pod_exec,
@@ -135,6 +141,8 @@ class KubernetesCluster:
             if error.status == 404:
                 return None
             raise _map(error, f"read sandbox {name}") from None
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"read sandbox {name}: {type(error).__name__}") from None
 
     @staticmethod
     def _status(name: str, item: dict) -> SandboxStatus:
@@ -194,6 +202,8 @@ class KubernetesCluster:
             socket = self._open_exec(name, argv)
         except ApiException as error:
             raise _map(error, f"exec in sandbox {name}") from None
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"exec in sandbox {name}: {type(error).__name__}") from None
         deadline = time.monotonic() + timeout
         chunks: list[str] = []
         try:
@@ -219,8 +229,11 @@ class KubernetesCluster:
             if code is None:
                 raise ClusterError(f"exec in sandbox {name} gave no exit code")
             return ExecResult("".join(chunks), code)
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"exec in sandbox {name}: {type(error).__name__}") from None
         finally:
-            # The process of a cancelled command stops when the sandbox is suspended.
+            # Close the socket on each path. The remote process of a command that is cancelled
+            # or timed out is not killed here. It stops when the sandbox is suspended.
             socket.close()
 
     def set_operating_mode(self, name: str, mode: str) -> None:
@@ -241,7 +254,7 @@ class KubernetesCluster:
             ),
             (
                 lambda: self._core.delete_namespaced_persistent_volume_claim(
-                    f"data-{name}", NAMESPACE
+                    f"{VOLUME}-{name}", NAMESPACE
                 ),
                 f"delete the volume of sandbox {name}",
             ),

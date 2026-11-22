@@ -83,3 +83,15 @@ def test_the_provider_refuses_an_image_without_a_digest(cluster):
         with pytest.raises(ValueError, match="digest"):
             provider.create_environment(cwd="/tmp", timeout=5, image=image)
     assert cluster.sandboxes == {}
+
+
+def test_the_configured_image_wins_over_the_image_that_hermes_passes(cluster):
+    from k8s_sandbox.provider import K8sSandboxProvider
+
+    provider = K8sSandboxProvider(cluster_factory=lambda: cluster, image=IMAGE)
+
+    # Hermes passes its own container image setting. That image is not a sandbox image.
+    provider.create_environment(cwd="/tmp", timeout=5, image="python:3.12")
+
+    (sandbox,) = cluster.sandboxes.values()
+    assert sandbox.image == IMAGE

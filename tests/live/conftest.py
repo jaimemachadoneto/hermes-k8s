@@ -29,7 +29,7 @@ def pytest_collection_modifyitems(config, items):
         return
     skip = pytest.mark.skip(reason="live suite: set HERMES_K8S_LIVE=1 and KUBECONFIG")
     for item in items:
-        if "live" in str(item.fspath):
+        if item.get_closest_marker("live"):
             item.add_marker(skip)
 
 

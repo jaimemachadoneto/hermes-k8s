@@ -52,10 +52,13 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
     ):
         if self._cluster_factory is None:
             raise RuntimeError("k8s_sandbox has no cluster client configured")
-        image = image or self._image
+        # The configured image wins. Hermes passes its own container image setting here, and
+        # that image is not a sandbox image.
+        image = self._image or image or ""
         if not image:
             raise ValueError("k8s_sandbox has no sandbox image configured")
-        # The admission policy refuses an image with no digest, so refuse it before any cluster call.
+        # The admission policy refuses an image with no digest. Refuse it here, before the first
+        # cluster call.
         validate_image(image)
         return K8sSandboxEnvironment(
             cluster=self._cluster_factory(),
