@@ -1,0 +1,131 @@
+name: release
+
+# `deploy patch|minor|major` pushes the tag vX.Y.Z that starts this workflow.
+# It checks and builds both images, scans them, pushes them to ghcr.io as
+# X.Y.Z and sha-<commit>, then opens a PR in home-ops that sets the new
+# references with their digests. Flux applies the PR after the merge.
+#
+# The secret MY_PAT is a token that can push a branch to home-ops and open a
+# PR there. It is the secret that the other projects use.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arc-jmn-nix
+  cancel-in-progress: false
+
+env:
+  HERMES_IMAGE: ghcr.io/jaimemachadoneto/hermes
+  SANDBOX_IMAGE: ghcr.io/jaimemachadoneto/hermes-sandbox
+  GITOPS_FILE: kubernetes/apps/ai/hermes/app/helmrelease.yaml
+
+jobs:
+  publish:
+    runs-on: arc-jmn-nix
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      hermes-tag: ${{ steps.push.outputs.hermes-tag }}
+      sandbox-ref: ${{ steps.push.outputs.sandbox-ref }}
+      version: ${{ steps.push.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: ./.github/actions/setup-nix
+
+      - name: Flake check
+        run: nix flake check
+
+      - name: Build the images
+        run: |
+          set -euo pipefail
+          nix build .#sandbox-image --no-link
+          nix build .#hermes-image --no-link
+
+      # A scan before the push: a failed scan keeps the image off the registry.
+      # The scan looks at the tarball, so it needs no registry and no daemon.
+      - name: Scan the images
+        run: |
+          set -euo pipefail
+          for attr in sandbox-image hermes-image; do
+            out=$(nix build ".#$attr" --no-link --print-out-paths)
+            nix shell --inputs-from . nixpkgs#trivy -c trivy image \
+              --input "$out" --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+          done
+
+      - name: Push the images
+        id: push
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version=${REF_NAME#v}
+          push() {
+            nix shell --inputs-from . nixpkgs#skopeo -c \
+              scripts/publish-image.sh "$1" "$2" "sha-$COMMIT" "$version"
+          }
+          sandbox_ref=$(push sandbox-image "$SANDBOX_IMAGE")
+          hermes_ref=$(push hermes-image "$HERMES_IMAGE")
+          {
+            echo "version=$version"
+            echo "sandbox-ref=$sandbox_ref"
+            echo "hermes-tag=${hermes_ref#"$HERMES_IMAGE:"}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Images"
+            echo "- \`$sandbox_ref\`"
+            echo "- \`$hermes_ref\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  gitops:
+    needs: publish
+    runs-on: arc-jmn-nix
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.publish.outputs.version }}
+      HERMES_TAG: ${{ needs.publish.outputs.hermes-tag }}
+      SANDBOX_REF: ${{ needs.publish.outputs.sandbox-ref }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: jaimemachadoneto/home-ops
+          token: ${{ secrets.MY_PAT }}
+          path: gitops
+
+      - name: Set the image references
+        run: |
+          set -euo pipefail
+          python3 scripts/set-image-refs.py "gitops/$GITOPS_FILE" \
+            --hermes-tag "$HERMES_TAG" --sandbox-ref "$SANDBOX_REF"
+          git -C gitops --no-pager diff
+
+      - name: Open the deploy PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          path: gitops
+          token: ${{ secrets.MY_PAT }}
+          branch: deploy/${{ github.event.repository.name }}-${{ needs.publish.outputs.version }}
+          delete-branch: true
+          commit-message: deploy ${{ github.event.repository.name }} ${{ needs.publish.outputs.version }}
+          title: deploy ${{ github.event.repository.name }} ${{ needs.publish.outputs.version }}
+          body: |
+            Set the Hermes image and the sandbox image (`HERMES_K8S_SANDBOX_IMAGE`) in `${{ env.GITOPS_FILE }}`. Each reference has its digest.
+
+            - Hermes: `${{ env.HERMES_TAG }}`
+            - Sandbox: `${{ env.SANDBOX_REF }}`
+            - Source: ${{ github.server_url }}/${{ github.repository }}/tree/v${{ needs.publish.outputs.version }}
+            - Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            A new sandbox image needs a new Nix base before sandboxes use it. Flux applies this PR after the merge.

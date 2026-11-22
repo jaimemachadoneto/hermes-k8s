@@ -29,35 +29,31 @@
     "nix build .#hermes-image --no-link"
   ];
 
-  # Manual push of the sandbox image. The token of `gh` needs the scope
-  # `write:packages`. It goes to skopeo through stdin, never to a file. The
-  # cluster pins the image by the digest that this verb prints.
+  # Manual push of the images. The token of `gh` needs the scope `write:packages`.
+  # `scripts/publish-image.sh` keeps the login in a temporary file, stops when
+  # skopeo fails, and prints `image:tag@sha256:...`. The cluster pins an image by
+  # that digest. The packages on ghcr.io stay private. CI uses the same script.
   base.commands.push-image = [
     ''
+      set -eo pipefail
       out=$(nix build .#sandbox-image --no-link --print-out-paths)
-      ref="ghcr.io/jaimemachadoneto/hermes-sandbox:$(basename "$out" | cut -c1-12)"
-      gh auth token | skopeo login ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null
-      skopeo --insecure-policy copy --quiet --digestfile /dev/stdout "docker-archive:$out" "docker://$ref" | sed "s|^|$ref@|"
+      REGISTRY_USER=$(gh api user --jq .login) REGISTRY_TOKEN=$(gh auth token) \
+        scripts/publish-image.sh sandbox-image ghcr.io/jaimemachadoneto/hermes-sandbox "$(basename "$out" | cut -c1-12)"
     ''
   ];
 
-  # Manual push of the Hermes image, the same way. The package on ghcr.io
-  # stays private.
   base.commands.push-hermes-image = [
     ''
       set -eo pipefail
       out=$(nix build .#hermes-image --no-link --print-out-paths)
-      ref="ghcr.io/jaimemachadoneto/hermes:$(basename "$out" | cut -c1-12)"
-      # The auth file is temporary: the token never stays on disk.
-      auth=$(mktemp)
-      echo "{}" > "$auth"
-      trap 'rm -f "$auth"' EXIT
-      gh auth token | skopeo login --authfile "$auth" ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null
-      digest=$(skopeo --insecure-policy copy --quiet --authfile "$auth" --digestfile /dev/stdout "docker-archive:$out" "docker://$ref")
-      [ -n "$digest" ] || { echo "push failed" >&2; exit 1; }
-      echo "$ref@$digest"
+      REGISTRY_USER=$(gh api user --jq .login) REGISTRY_TOKEN=$(gh auth token) \
+        scripts/publish-image.sh hermes-image ghcr.io/jaimemachadoneto/hermes "$(basename "$out" | cut -c1-12)"
     ''
   ];
+
+  # `deploy patch|minor|major` tags main as vX.Y.Z and pushes the tag. The
+  # workflow .github/workflows/release.yaml does the rest.
+  base.release.enable = true;
 
   # env.DATABASE_URL = "...";
   # services.postgres.enable = true;
