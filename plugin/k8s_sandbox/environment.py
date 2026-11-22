@@ -7,8 +7,8 @@ import logging
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 
-from .nix_base import choose_nix_base
 from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
+from .nix_base import choose_nix_base
 
 logger = logging.getLogger(__name__)
 

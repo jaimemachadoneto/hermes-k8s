@@ -11,8 +11,8 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import urllib3.exceptions

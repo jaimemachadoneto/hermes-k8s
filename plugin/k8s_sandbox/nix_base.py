@@ -71,7 +71,7 @@ def nix_bases_to_delete(
     for base in bases:
         by_image[base.image_digest].append(base)
     doomed: list[str] = []
-    for digest, group in by_image.items():
+    for group in by_image.values():
         ready = _newest_first([b for b in group if b.ready])
         doomed += [b.name for b in ready[KEEP_PER_IMAGE:]]
         doomed += [b.name for b in group if not b.ready and now - b.created > NOT_READY_SECONDS]

@@ -11,7 +11,7 @@ from typing import Any
 
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 
-from .cluster import Cluster
+from .cluster import Cluster, ClusterError
 from .environment import K8sSandboxEnvironment
 from .nix_base import reap_nix_bases
 from .sandbox_spec import validate_image
@@ -69,7 +69,7 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
         # deletes the old Nix bases. A failure here must not stop a session.
         try:
             reap_nix_bases(cluster, image)
-        except Exception as error:
+        except ClusterError as error:
             logger.warning("Cannot delete the old Nix bases: %s", error)
         return K8sSandboxEnvironment(
             cluster=cluster,
