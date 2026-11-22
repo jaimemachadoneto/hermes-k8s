@@ -33,6 +33,13 @@ runs:
         fi
         # NIX_CONFIG of the runner sets build-dir to this directory.
         mkdir -p /nix/var/nix/builds
+        # The pod has fsGroup, so kubelet sets the setgid bit on /nix and each
+        # new directory under it inherits the bit. The syscall filter of Nix
+        # refuses a chmod of a setgid directory (EPERM), so each build that
+        # runs chmod fails. This runs outside Nix, so no filter applies. A build
+        # directory takes the bit from this parent when Nix creates it.
+        chmod g-s /nix/var/nix/builds
+        ls -ldn /nix /nix/var/nix/builds
         if [ -x "$profile/bin/nix" ]; then
           echo "installed=false" >> "$GITHUB_OUTPUT"
           exit 0
