@@ -1,4 +1,4 @@
-"""The development shell has the tools that the verbs need."""
+"""Check that the development shell has the tools that the verbs need."""
 
 import re
 from pathlib import Path
