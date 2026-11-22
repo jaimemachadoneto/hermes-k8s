@@ -3,7 +3,7 @@
 It keeps the Sandbox objects in a dict. Its exec runs the `argv` as a real
 process in a temporary directory, so the commands behave as they do in a pod. The names follow
 what the agent-sandbox controller does: the pod has the name of the Sandbox, and
-the volume is `workspace-<sandbox name>`.
+the volume is `data-<sandbox name>`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from .cluster import (
 )
 
 _POLL_SECONDS = 0.02
-_TEMPLATE = "workspace"
+_TEMPLATE = "data"
 
 
 @dataclass

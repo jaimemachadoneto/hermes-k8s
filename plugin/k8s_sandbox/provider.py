@@ -12,6 +12,7 @@ from agent.terminal_env_provider import TerminalEnvironmentProvider
 
 from .cluster import Cluster
 from .environment import K8sSandboxEnvironment
+from .sandbox_spec import validate_image
 
 # The GitHub tokens stay in the Secret of the sandbox namespace (ADR 0008). Hermes
 # keeps its own copies for its own features, so the backend hides them from commands.
@@ -44,7 +45,7 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
         return "~"
 
     def is_available(self) -> bool:
-        return self._cluster_factory is not None
+        return self._cluster_factory is not None and bool(self._image)
 
     def create_environment(
         self, *, cwd, timeout, task_id="default", image=None, container_config=None, **kwargs: Any
@@ -54,6 +55,8 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
         image = image or self._image
         if not image:
             raise ValueError("k8s_sandbox has no sandbox image configured")
+        # The admission policy refuses an image with no digest, so refuse it before any cluster call.
+        validate_image(image)
         return K8sSandboxEnvironment(
             cluster=self._cluster_factory(),
             task_id=task_id,

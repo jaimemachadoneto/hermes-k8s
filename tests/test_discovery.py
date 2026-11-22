@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 from agent import terminal_env_registry as registry
 from hermes_cli.plugins import PluginManager
+from images import IMAGE
 
 PLUGINS_DIR = Path(__file__).resolve().parents[1] / "plugin"
 
 
 @pytest.fixture
 def discovered(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_K8S_SANDBOX_IMAGE", raising=False)
     home = tmp_path / "hermes-home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -43,7 +45,20 @@ def test_the_provider_declares_how_hermes_treats_the_backend(discovered):
     assert registry.plugin_strip_env_keys() >= {"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_TOKEN_PERSONAL"}
 
 
-def test_without_a_cluster_client_the_backend_is_not_available(discovered):
-    provider = registry.get_provider("k8s_sandbox")
+def test_without_a_sandbox_image_the_backend_is_not_available(discovered):
+    assert registry.get_provider("k8s_sandbox").is_available() is False
 
-    assert provider.is_available() is False
+
+def test_with_a_sandbox_image_the_backend_is_available_and_makes_no_cluster_call(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(PLUGINS_DIR))
+    monkeypatch.setenv("HERMES_K8S_SANDBOX_IMAGE", IMAGE)
+    registry._reset_for_tests()
+    PluginManager().discover_and_load()
+
+    assert registry.get_provider("k8s_sandbox").is_available() is True
+    registry._reset_for_tests()
