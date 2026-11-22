@@ -17,7 +17,9 @@ from .sandbox_spec import DEFAULT_PROFILE, secret_name, validate_image
 # The GitHub tokens stay in the Secret of the sandbox namespace (ADR 0008). Hermes
 # keeps its own copies for its own features, so the backend hides them from commands.
 # The backend hides GIT_CONFIG_SYSTEM too: the image sets it, and a command must not change it.
-GITHUB_KEYS = frozenset({"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_TOKEN_PERSONAL", "GIT_CONFIG_SYSTEM"})
+HIDDEN_ENV_KEYS = frozenset(
+    {"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_TOKEN_PERSONAL", "GIT_CONFIG_SYSTEM"}
+)
 
 
 def current_profile() -> str:
@@ -45,7 +47,7 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
 
     @property
     def strip_env_keys(self) -> frozenset:
-        return GITHUB_KEYS
+        return HIDDEN_ENV_KEYS
 
     @property
     def default_cwd(self) -> str:
