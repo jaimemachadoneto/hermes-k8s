@@ -22,6 +22,7 @@ from .cluster import (
     CancelToken,
     ClusterError,
     ExecResult,
+    NixBase,
     SandboxNotFound,
     SandboxNotReady,
     SandboxStatus,
@@ -40,6 +41,8 @@ class FakeSandbox:
     directory: Path
     operating_mode: str = RUNNING
     ready: bool = True
+    # The name of the Nix base that the volume was cloned from, or None for an empty volume.
+    nix_base: str | None = None
 
     @property
     def pod_name(self) -> str:
@@ -62,9 +65,12 @@ class FakeCluster:
     sandboxes: dict[str, FakeSandbox] = field(default_factory=dict)
     # Set it to make each new sandbox stay without a ready pod.
     never_ready: bool = False
+    nix_bases: list[NixBase] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def create_sandbox(self, name: str, *, image: str, labels: dict[str, str]) -> None:
+    def create_sandbox(
+        self, name: str, *, image: str, labels: dict[str, str], nix_base: str | None = None
+    ) -> None:
         with self._lock:
             if name in self.sandboxes:
                 return
@@ -74,7 +80,7 @@ class FakeCluster:
             # in its profile, so the fake does the same for the tools of the test process.
             (directory / ".bash_profile").write_text(f"export PATH={os.environ.get('PATH', '')}\n")
             self.sandboxes[name] = FakeSandbox(
-                name, image, dict(labels), directory, ready=not self.never_ready
+                name, image, dict(labels), directory, ready=not self.never_ready, nix_base=nix_base
             )
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
@@ -142,6 +148,12 @@ class FakeCluster:
     def delete_sandbox(self, name: str) -> None:
         with self._lock:
             self.sandboxes.pop(name, None)
+
+    def list_nix_bases(self) -> list[NixBase]:
+        return list(self.nix_bases)
+
+    def delete_nix_base(self, name: str) -> None:
+        self.nix_bases = [b for b in self.nix_bases if b.name != name]
 
 
 def _kill(proc: subprocess.Popen) -> str:

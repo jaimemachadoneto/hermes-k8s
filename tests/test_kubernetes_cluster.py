@@ -39,7 +39,7 @@ def sandbox_object(*, mode="Running", ready="True", message=""):
 
 class StubCustom:
     def __init__(self):
-        self.objects, self.calls, self.fail = {}, [], None
+        self.objects, self.calls, self.fail, self.snapshots = {}, [], None, []
 
     def create_namespaced_custom_object(self, group, version, namespace, plural, body, **kw):
         self.calls.append(("create", group, version, namespace, plural, body))
@@ -58,6 +58,12 @@ class StubCustom:
         self.calls.append(("patch", name, body))
         if name not in self.objects:
             raise api_error(404, {"message": "not found"})
+
+    def list_namespaced_custom_object(self, group, version, namespace, plural, **kw):
+        self.calls.append(("list", group, version, namespace, plural, kw))
+        if self.fail:
+            raise self.fail
+        return {"items": self.snapshots}
 
     def delete_namespaced_custom_object(self, group, version, namespace, plural, name, **kw):
         self.calls.append(("delete", name))
@@ -422,3 +428,75 @@ def test_an_error_with_a_body_that_is_not_json_still_gives_a_cluster_error(make,
 
     with pytest.raises(ClusterError, match="boom"):
         cluster.create_sandbox("hermes-a", image=IMAGE, labels={})
+
+
+def snapshot_object(name, digest, created, *, ready=True):
+    return {
+        "metadata": {
+            "name": name,
+            "creationTimestamp": created,
+            "labels": {"hermes-k8s/kind": "nix-base", "hermes-k8s/image-digest": digest},
+        },
+        "status": {"readyToUse": ready},
+    }
+
+
+def test_the_nix_bases_are_the_volume_snapshots_with_the_label_nix_base(make, custom):
+    cluster, _ = make()
+    custom.snapshots = [
+        snapshot_object("a", "d" * 32, "2026-11-22T10:00:00Z"),
+        snapshot_object("b", "e" * 32, "2026-11-22T11:00:00Z", ready=False),
+    ]
+
+    bases = cluster.list_nix_bases()
+
+    ((_, group, version, namespace, plural, kw),) = custom.calls
+    assert (group, version, namespace, plural) == (
+        "snapshot.storage.k8s.io",
+        "v1",
+        "hermes-sandbox",
+        "volumesnapshots",
+    )
+    assert kw["label_selector"] == "hermes-k8s/kind=nix-base"
+    assert [(b.name, b.image_digest, b.ready) for b in bases] == [
+        ("a", "d" * 32, True),
+        ("b", "e" * 32, False),
+    ]
+    assert bases[1].created - bases[0].created == 3600
+
+
+def test_a_snapshot_with_no_status_is_not_ready(make, custom):
+    cluster, _ = make()
+    item = snapshot_object("a", "d" * 32, "2026-11-22T10:00:00Z")
+    del item["status"]
+    custom.snapshots = [item]
+
+    assert [b.ready for b in cluster.list_nix_bases()] == [False]
+
+
+def test_a_refused_list_of_the_nix_bases_is_a_cluster_error(make, custom):
+    cluster, _ = make()
+    custom.fail = api_error(403, {"message": "forbidden"})
+
+    with pytest.raises(ClusterError, match="forbidden"):
+        cluster.list_nix_bases()
+
+
+def test_delete_nix_base_deletes_the_snapshot_and_ignores_a_missing_one(make, custom):
+    cluster, _ = make()
+    custom.objects["a"] = {}
+
+    cluster.delete_nix_base("a")
+    cluster.delete_nix_base("a")
+
+    assert custom.calls == [("delete", "a"), ("delete", "a")]
+
+
+def test_create_with_a_nix_base_sends_the_data_source(make, custom):
+    cluster, _ = make()
+
+    cluster.create_sandbox("hermes-a", image=IMAGE, labels={}, nix_base="nix-base-1")
+
+    (call,) = custom.calls
+    template = call[5]["spec"]["volumeClaimTemplates"][0]
+    assert template["spec"]["dataSource"]["name"] == "nix-base-1"

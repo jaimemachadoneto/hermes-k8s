@@ -5,6 +5,7 @@
 # its own documentation sets a class attribute and returns an environment.
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -12,7 +13,10 @@ from agent.terminal_env_provider import TerminalEnvironmentProvider
 
 from .cluster import Cluster
 from .environment import K8sSandboxEnvironment
+from .nix_base import reap_nix_bases
 from .sandbox_spec import validate_image
+
+logger = logging.getLogger(__name__)
 
 # The GitHub tokens stay in the Secret of the sandbox namespace (ADR 0008). Hermes
 # keeps its own copies for its own features, so the backend hides them from commands.
@@ -60,8 +64,15 @@ class K8sSandboxProvider(TerminalEnvironmentProvider):
         # The admission policy refuses an image with no digest. Refuse it here, before the first
         # cluster call.
         validate_image(image)
+        cluster = self._cluster_factory()
+        # The plugin is the only part that runs often and knows the current image, so it also
+        # deletes the old Nix bases. A failure here must not stop a session.
+        try:
+            reap_nix_bases(cluster, image)
+        except Exception as error:
+            logger.warning("Cannot delete the old Nix bases: %s", error)
         return K8sSandboxEnvironment(
-            cluster=self._cluster_factory(),
+            cluster=cluster,
             task_id=task_id,
             image=image,
             cwd=cwd,

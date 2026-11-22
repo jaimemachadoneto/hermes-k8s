@@ -7,6 +7,7 @@ import logging
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 
+from .nix_base import choose_nix_base
 from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
 
 logger = logging.getLogger(__name__)
@@ -53,10 +54,14 @@ class K8sSandboxEnvironment(BaseEnvironment):
         """Create the sandbox, or resume the one of the same task id."""
         status = self._cluster.get_sandbox(self.sandbox_name)
         if status is None:
+            nix_base = choose_nix_base(self._cluster, image)
             self._cluster.create_sandbox(
-                self.sandbox_name, image=image, labels={"hermes-task": self.sandbox_name}
+                self.sandbox_name,
+                image=image,
+                labels={"hermes-task": self.sandbox_name},
+                nix_base=nix_base,
             )
-            logger.info("Created sandbox %s", self.sandbox_name)
+            logger.info("Created sandbox %s from Nix base %s", self.sandbox_name, nix_base)
         elif status.operating_mode == SUSPENDED:
             self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
             logger.info("Resumed sandbox %s", self.sandbox_name)

@@ -56,6 +56,18 @@ class SandboxStatus:
 
 
 @dataclass(frozen=True)
+class NixBase:
+    """A Nix base: a VolumeSnapshot that the Nix base Job made for one sandbox image."""
+
+    name: str
+    # The label of the image digest (see `nix_base.image_digest_label`).
+    image_digest: str
+    # Seconds since the epoch.
+    created: float
+    ready: bool
+
+
+@dataclass(frozen=True)
 class ExecResult:
     output: str
     exit_code: int
@@ -76,13 +88,20 @@ class CancelToken:
 
 
 class Cluster(Protocol):
-    """The port has six operations. They create, find, wait for, run in, suspend and delete a sandbox.
+    """The port has eight operations. Six create, find, wait for, run in, suspend and delete a
+    sandbox. Two list and delete the Nix bases.
 
     Each operation raises a `ClusterError` (or a subclass) when the cluster fails it.
     """
 
-    def create_sandbox(self, name: str, *, image: str, labels: dict[str, str]) -> None:
-        """Create the Sandbox. Do nothing when it exists already."""
+    def create_sandbox(
+        self, name: str, *, image: str, labels: dict[str, str], nix_base: str | None = None
+    ) -> None:
+        """Create the Sandbox. Do nothing when it exists already.
+
+        When `nix_base` names a VolumeSnapshot, the volume of the sandbox is a clone of it.
+        Otherwise the volume is empty.
+        """
         ...
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
@@ -117,4 +136,12 @@ class Cluster(Protocol):
 
     def delete_sandbox(self, name: str) -> None:
         """Delete the Sandbox and its volume. Do nothing when it does not exist."""
+        ...
+
+    def list_nix_bases(self) -> list[NixBase]:
+        """Return each Nix base in the namespace, ready or not."""
+        ...
+
+    def delete_nix_base(self, name: str) -> None:
+        """Delete the Nix base. Do nothing when it does not exist."""
         ...

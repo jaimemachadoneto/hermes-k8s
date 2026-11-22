@@ -1,6 +1,7 @@
 """The Sandbox that the plugin makes must pass the admission policy of home-ops."""
 
 import copy
+import os
 from pathlib import Path
 
 import pytest
@@ -135,14 +136,24 @@ def _run_init_script(tmp_path, *, marker, half_copy):
     script = make()["spec"]["podTemplate"]["spec"]["initContainers"][0]["command"][-1]
     # Move the paths into `tmp_path`. A placeholder stops one replacement from changing the result of the next.
     script = script.replace("/data/nix/store", "@DST@").replace("/nix/store", "@SRC@")
-    script = script.replace("/data", "@DATA@")
+    script = script.replace("/data", "@DATA@").replace("/etc/nix/registration", "@REG@")
+    # A stand-in for nix-store: it records the state directory and the input that it gets.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "nix-store").write_text(
+        f'#!/bin/sh\necho "$NIX_STATE_DIR $*" > {tmp_path}/load-db.args\ncat > {tmp_path}/load-db.input\n'
+    )
+    (bin_dir / "nix-store").chmod(0o755)
+    (tmp_path / "registration").write_text("registration of the image\n")
     for placeholder, path in (
+        ("@REG@", str(tmp_path / "registration")),
         ("@DST@", f"{data}/nix/store"),
         ("@SRC@", str(image_store)),
         ("@DATA@", str(data)),
     ):
         script = script.replace(placeholder, path)
-    subprocess.run(["sh", "-c", script], check=True)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    subprocess.run(["sh", "-c", script], check=True, env=env)
     return data
 
 
@@ -152,6 +163,13 @@ def test_the_init_step_copies_the_store_into_an_empty_volume(tmp_path):
     assert (data / "nix" / "store" / "pkg" / "bin" / "tool").read_text() == "tool"
     assert (data / "nix" / ".closure-copied").exists()
     assert (data / "workspace").is_dir() and (data / "home").is_dir()
+
+
+def test_the_init_step_registers_the_paths_of_the_image_in_the_database_of_the_volume(tmp_path):
+    data = _run_init_script(tmp_path, marker=False, half_copy=False)
+
+    assert (tmp_path / "load-db.args").read_text() == f"{data}/nix/var/nix --load-db\n"
+    assert (tmp_path / "load-db.input").read_text() == "registration of the image\n"
 
 
 def test_the_init_step_replaces_an_incomplete_copy(tmp_path):
@@ -167,6 +185,7 @@ def test_the_init_step_does_nothing_when_the_volume_has_the_marker(tmp_path):
 
     assert (data / "nix" / "store" / "stale" / "sub" / "f").exists()
     assert not (data / "nix" / "store" / "pkg").exists()
+    assert not (tmp_path / "load-db.args").exists()
 
 
 def test_the_pod_has_no_service_account_token_secret_or_service_link():
