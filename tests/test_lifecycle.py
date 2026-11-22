@@ -1,6 +1,6 @@
 """Suspend and resume: the idle clock, the sweep after a restart, and the calls of Hermes.
 
-The fake cluster and the test clock stand for the cluster and for time. The tests that call
+The fake cluster and the test clock replace the cluster and time. The tests that call
 `_cleanup_inactive_envs`, `cleanup_vm` and `cleanup_all_environments` run the real code of Hermes.
 """
 
@@ -253,7 +253,7 @@ def test_commands_within_the_interval_write_the_mark_once(make_env, cluster, clo
     assert len(calls) >= 1
 
 
-def test_the_sweep_goes_on_after_one_sandbox_fails(cluster, clock):
+def test_the_sweep_continues_after_one_sandbox_fails(cluster, clock):
     from k8s_sandbox.cluster import ClusterError
 
     for name in ("a", "b"):

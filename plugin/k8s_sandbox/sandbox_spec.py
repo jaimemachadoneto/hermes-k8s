@@ -29,7 +29,7 @@ _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
 _COPY_CLOSURE = """\
 set -eu
 mkdir -p /data/nix /data/workspace
-# An older sandbox kept its home in /data/home. Move it into the workspace once.
+# An older sandbox kept its home in /data/home. Copy it into the workspace once. The old directory stays.
 if [ -d /data/home ] && [ ! -e /data/workspace/.home ]; then
   cp -a /data/home /data/workspace/.home
 fi

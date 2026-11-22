@@ -56,8 +56,9 @@ def suspend_idle(
 
     Call it once, when the process starts: it finds the sandboxes that an earlier process left
     running. Do not call it in a loop. It cannot see the background processes that Hermes tracks,
-    and the idle reaper of Hermes does that work while Hermes runs. A second Hermes process that
-    starts while the first one runs sees fresh last-use times, because each command marks one.
+    so while Hermes runs, the idle reaper of Hermes does that work. A second Hermes process that
+    starts while the first one runs can suspend a sandbox with no command for more than
+    `idle_seconds`, also a sandbox that holds a background process. This is a known limit.
     `only` limits the sweep to the sandboxes whose name it accepts (the live tests use it).
     A sandbox with no last-use time gets one now, so it is not suspended at once.
     A failure on one sandbox does not stop the sweep.

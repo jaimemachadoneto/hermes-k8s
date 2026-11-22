@@ -105,7 +105,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         """Suspend the sandbox. Its volume stays for the next environment of the task.
 
         Hermes calls this at the end of a session, after the idle time, and at shutdown. It never
-        deletes the sandbox: only the TTL of a suspended sandbox does that.
+        deletes the sandbox: ticket 14 adds a TTL that deletes a suspended sandbox.
         """
         try:
             self._use.mark(force=True)
