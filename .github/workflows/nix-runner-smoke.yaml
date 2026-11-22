@@ -53,7 +53,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "image digest: $digest"
           # A run again of the same commit must find the image in the store.
-          if [ "$RUN_ATTEMPT" -gt 1 ] && [ "$reused" != true ]; then
+          # A run that installed Nix had an empty store, so it is not a run
+          # again for the store, also when its attempt number is above 1.
+          if [ "$RUN_ATTEMPT" -gt 1 ] && [ "$NIX_INSTALLED" = false ] && [ "$reused" != true ]; then
             echo "::error::The store did not keep the image of the first run."
             exit 1
           fi
