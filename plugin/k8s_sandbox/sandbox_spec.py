@@ -13,6 +13,14 @@ API_VERSION = "agents.x-k8s.io/v1beta1"
 SHELL = "shell"
 INIT = "copy-closure"
 UID = 10000
+# The Secret of a profile (ADR 0008). The admission policy allows only this name pattern.
+SECRET_PREFIX = "hermes-sandbox-"
+SECRET_VOLUME = "github"
+SECRET_PATH = "/run/secrets/github"
+DEFAULT_PROFILE = "default"
+# A profile id of Hermes may have "_", and a Secret name may not. The code refuses a profile
+# that a Secret name cannot hold, so that no two profiles share one Secret.
+_PROFILE = re.compile(r"[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?")
 
 # The policy pins the image by digest, so a tag that moves cannot change a sandbox.
 _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
@@ -44,6 +52,13 @@ def validate_image(image: str) -> None:
         raise ValueError(f"the sandbox image must have a sha256 digest: {image!r}")
 
 
+def secret_name(profile: str) -> str:
+    """Return the name of the Secret of a profile. Raise ValueError when the name is not valid for a Secret."""
+    if not _PROFILE.fullmatch(profile):
+        raise ValueError(f"the profile has no valid name for a Secret: {profile!r}")
+    return SECRET_PREFIX + profile
+
+
 def _security_context() -> dict:
     return {
         "allowPrivilegeEscalation": False,
@@ -52,9 +67,12 @@ def _security_context() -> dict:
     }
 
 
-def build_sandbox(name: str, *, image: str, labels: dict[str, str]) -> dict:
-    """Return the Sandbox object. The object holds no secret and no token."""
+def build_sandbox(
+    name: str, *, image: str, labels: dict[str, str], profile: str = DEFAULT_PROFILE
+) -> dict:
+    """Return the Sandbox object. It names the Secret of the profile and holds no token."""
     validate_image(image)
+    secret = secret_name(profile)
     return {
         "apiVersion": API_VERSION,
         "kind": "Sandbox",
@@ -115,10 +133,15 @@ def build_sandbox(name: str, *, image: str, labels: dict[str, str]) -> dict:
                                 {"name": VOLUME, "mountPath": "/workspace", "subPath": "workspace"},
                                 {"name": VOLUME, "mountPath": "/home/sandbox", "subPath": "home"},
                                 {"name": "tmp", "mountPath": "/tmp"},
+                                {"name": SECRET_VOLUME, "mountPath": SECRET_PATH, "readOnly": True},
                             ],
                         }
                     ],
-                    "volumes": [{"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}}],
+                    "volumes": [
+                        {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}},
+                        # Optional: a profile with no tokens still gets a sandbox.
+                        {"name": SECRET_VOLUME, "secret": {"secretName": secret, "optional": True}},
+                    ],
                 },
             },
             "volumeClaimTemplates": [

@@ -2,7 +2,7 @@
 
 The source is `validatingadmissionpolicy.yaml` in home-ops. `fixtures/sandbox-good.yaml` is a
 copy of `tests/hermes-sandbox/sandbox-good.yaml` there. Change this file with the policy.
-The names of the rules: account, host, scheduling, volume, template, init, image, pull-secret and
+The names of the rules: account, labels, host, scheduling, volume, template, init, image, pull-secret and
 affinity. The quantities: only whole `Mi`, `Gi` and `Ti` values (the plugin sends `20Gi`).
 """
 
@@ -12,6 +12,8 @@ IMAGE_PATTERN = re.compile(
     r"ghcr\.io/jaimemachadoneto/hermes-sandbox"
     r"(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}"
 )
+# The Secret of a profile (ADR 0008): the only Secret that a sandbox pod may mount.
+SECRET_PATTERN = re.compile(r"hermes-sandbox-[a-z0-9]([-a-z0-9]*[a-z0-9])?")
 _SCHEDULING_FIELDS = (
     "tolerations",
     "nodeSelector",
@@ -20,6 +22,10 @@ _SCHEDULING_FIELDS = (
     "schedulerName",
     "shareProcessNamespace",
 )
+# The labels of the pod that the policy accepts: the task label, and one allowance label for each
+# service that has a CiliumNetworkPolicy in home-ops. For a new service, add a key here, in the
+# admission policy and in the CiliumNetworkPolicy of the service.
+ALLOWED_LABELS = frozenset({"hermes-task", "hermes-k8s/allow-litellm"})
 _GIB = 1024**3
 
 
@@ -45,8 +51,7 @@ def violations(sandbox: dict) -> list[str]:
     if any(k in pod for k in _SCHEDULING_FIELDS):
         found.append("scheduling")
     for volume in pod.get("volumes", []):
-        empty_dir = volume.get("emptyDir")
-        if empty_dir is None or "sizeLimit" not in empty_dir or empty_dir.get("medium", ""):
+        if not _volume_ok(volume):
             found.append("volume")
     for template in spec.get("volumeClaimTemplates", []):
         if not _template_ok(template.get("spec", {})):
@@ -65,9 +70,21 @@ def violations(sandbox: dict) -> list[str]:
             found.append("image")
     if any(s["name"] != "ghcr-pull" for s in pod.get("imagePullSecrets", [])):
         found.append("pull-secret")
+    labels = (spec["podTemplate"].get("metadata") or {}).get("labels") or {}
+    labels = labels | (sandbox.get("metadata", {}).get("labels") or {})
+    if not set(labels) <= ALLOWED_LABELS:
+        found.append("labels")
     if not _affinity_ok(pod):
         found.append("affinity")
     return sorted(set(found))
+
+
+def _volume_ok(volume: dict) -> bool:
+    secret = volume.get("secret")
+    if secret is not None:
+        return bool(SECRET_PATTERN.fullmatch(secret.get("secretName", "")))
+    empty_dir = volume.get("emptyDir")
+    return empty_dir is not None and "sizeLimit" in empty_dir and not empty_dir.get("medium", "")
 
 
 def _template_ok(spec: dict) -> bool:

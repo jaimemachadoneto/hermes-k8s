@@ -47,7 +47,7 @@ pkgs.dockerTools.buildLayeredImage {
     pkgs.tini
   ];
   extraCommands = ''
-    mkdir -p usr/bin workspace tmp home/sandbox etc/nix
+    mkdir -p usr/bin workspace tmp home/sandbox etc/nix etc/sandbox run/secrets/github
 
     # These are real files, not links into the store: the volume at /nix hides
     # the store, and the user lookup must work before the Nix base is ready.
@@ -70,9 +70,20 @@ pkgs.dockerTools.buildLayeredImage {
       'trusted-public-keys = ${lib.concatStringsSep " " publicKeys}' \
       > etc/nix/nix.conf
 
+    # The GitHub tokens (ADR 0008). The plugin mounts the Secret of the profile at
+    # /run/secrets/github. A command is `bash -c`, not a login shell, so BASH_ENV
+    # (see Env) makes bash read the script for each command, and /etc/profile reads
+    # it for a login shell. git has no need of the script: its credential helpers read
+    # the files. The system file of git is in the store by default, so Env sets it.
+    cp ${./sandbox-github-env.sh} etc/sandbox/github-env.sh
+    cp ${./sandbox-gitconfig} etc/gitconfig
+    printf '%s\n' '. /etc/sandbox/github-env.sh' > etc/profile
+
     ln -s ${pkgs.tini}/bin/tini usr/bin/tini
     ln -s ${pkgs.coreutils}/bin/env usr/bin/env
-    chmod 1777 tmp
+    # Clear setgid: a directory can inherit it on the runner (fsGroup), and the
+    # syscall filter of Nix refuses a chmod that keeps it.
+    chmod a+rwx,g-s,+t tmp
   '';
   fakeRootCommands = ''
     chown ${uid}:${uid} workspace home/sandbox
@@ -94,6 +105,8 @@ pkgs.dockerTools.buildLayeredImage {
       "PATH=/bin:/usr/bin"
       "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
       "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+      "BASH_ENV=/etc/sandbox/github-env.sh"
+      "GIT_CONFIG_SYSTEM=/etc/gitconfig"
     ];
   };
 }
