@@ -60,10 +60,10 @@ pkgs.dockerTools.buildLayeredImage {
     # No daemon and no build users: Nix runs as one user. The Nix sandbox
     # needs user namespaces, which the pod does not allow (ADR 0003).
     #
-    # The Nix cache (ncps) is the first substituter. The two public caches stay
-    # as a fallback, so a sandbox still works when the Nix cache is down. ncps
-    # passes the upstream signatures through and has no key of its own, so
-    # only the keys of the upstream caches are trusted.
+    # The Nix cache (ncps) is the first substituter. The three public caches
+    # stay as a fallback. A sandbox then works when the Nix cache is down.
+    # ncps passes the upstream signatures through and has no key of its own.
+    # Trust only the keys of the upstream caches.
     printf '%s\n' 'sandbox = false' 'build-users-group =' \
       'experimental-features = nix-command flakes' \
       'substituters = ${nixCache} https://cache.nixos.org https://devenv.cachix.org https://nix-community.cachix.org' \

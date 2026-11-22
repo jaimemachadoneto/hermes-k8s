@@ -16,7 +16,7 @@ def test_the_nix_cache_answers_in_the_sandbox(make_env):
     assert "StoreDir: /nix/store" in result["output"]
 
 
-def test_the_nix_cache_is_the_first_substituter(make_env):
+def test_the_nix_cache_is_the_first_cache_of_nix(make_env):
     env = make_env()
 
     result = env.execute("nix config show substituters | awk '{print $1}'")
