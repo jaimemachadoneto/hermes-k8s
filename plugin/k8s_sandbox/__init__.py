@@ -6,11 +6,15 @@ import os
 import threading
 import time
 
+from .allowances import SETTING, allowance_labels, services_for_profile
 from .kubernetes_cluster import KubernetesCluster
 from .lifecycle import suspend_idle
 from .provider import K8sSandboxProvider
 
 logger = logging.getLogger(__name__)
+
+# The name that Hermes gives to the profile of the Hermes home that is not in `profiles/`.
+DEFAULT_PROFILE = "default"
 
 
 @functools.cache
@@ -35,6 +39,20 @@ def register(ctx) -> None:
     image = os.environ.get("HERMES_K8S_SANDBOX_IMAGE", "")
     if not image:
         logger.warning("HERMES_K8S_SANDBOX_IMAGE is not set: the backend cannot start a sandbox")
-    ctx.register_terminal_environment_provider(K8sSandboxProvider(_cluster, image))
+
+    def allowances() -> list[str]:
+        # Read at each sandbox, because one Hermes process can serve more than one profile.
+        from hermes_cli.profiles import current_profile_name
+
+        profile = current_profile_name(DEFAULT_PROFILE) or DEFAULT_PROFILE
+        services = services_for_profile(ctx.get_config(SETTING), profile)
+        try:
+            allowance_labels(services)
+        except ValueError as error:
+            # The operator must see which profile has the wrong entry.
+            raise ValueError(f"{SETTING} of the profile {profile!r}: {error}") from error
+        return services
+
+    ctx.register_terminal_environment_provider(K8sSandboxProvider(_cluster, image, allowances))
     # In a thread: the call goes to the cluster, and the start of Hermes must not wait for it.
     threading.Thread(target=_suspend_left_running, name="k8s-sandbox-sweep", daemon=True).start()

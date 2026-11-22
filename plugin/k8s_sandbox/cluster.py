@@ -11,6 +11,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .sandbox_spec import DEFAULT_PROFILE
+
 NAMESPACE = "hermes-sandbox"
 RUNNING = "Running"
 SUSPENDED = "Suspended"
@@ -23,12 +25,15 @@ _NAME_PREFIX = "hermes-"
 _NAME_HASH_LENGTH = 40
 
 
-def sandbox_name(task_id: str) -> str:
+def sandbox_name(task_id: str, profile: str = DEFAULT_PROFILE) -> str:
     """Name the sandbox of a task from a hash of its id.
 
-    The same id gives the same name. The hash keeps the name valid for any id.
+    The same id gives the same name. The hash keeps the name valid for any id. A profile that is
+    not the default is part of the hash, so a sandbox never runs with the tokens of another
+    profile. The name of the default profile stays as it was.
     """
-    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+    key = task_id if profile == DEFAULT_PROFILE else f"{task_id}\0{profile}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return f"{_NAME_PREFIX}{digest[:_NAME_HASH_LENGTH]}"
 
 
@@ -85,8 +90,10 @@ class Cluster(Protocol):
     Each operation raises a `ClusterError` (or a subclass) when the cluster fails it.
     """
 
-    def create_sandbox(self, name: str, *, image: str, labels: dict[str, str]) -> None:
-        """Create the Sandbox. Do nothing when it exists already."""
+    def create_sandbox(
+        self, name: str, *, image: str, labels: dict[str, str], profile: str = DEFAULT_PROFILE
+    ) -> None:
+        """Create the Sandbox. It mounts the Secret of the profile. Do nothing when it exists already."""
         ...
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:

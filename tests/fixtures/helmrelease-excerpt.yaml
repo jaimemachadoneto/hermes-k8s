@@ -1,0 +1,16 @@
+# An excerpt of kubernetes/apps/ai/hermes/app/helmrelease.yaml in home-ops.
+spec:
+  values:
+    controllers:
+      hermes:
+        containers:
+          app:
+            image: &image
+              repository: ghcr.io/jaimemachadoneto/hermes
+              tag: h3ci28bajyp5@sha256:52bf673856ea3d92dcc49a61819f8259b58643634412a25c9f563c19b25fc213
+            env: &env
+              HERMES_HOME: /opt/data
+              # The sandbox image, pinned by digest.
+              HERMES_K8S_SANDBOX_IMAGE: ghcr.io/jaimemachadoneto/hermes-sandbox:y2iwr4mjg4pn@sha256:bc56a0949f68efd3ba28e63a83a9e1b00e73a4ea0b8fef9816b228e038912f73
+          dashboard:
+            image: *image

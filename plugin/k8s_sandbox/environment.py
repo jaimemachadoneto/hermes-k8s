@@ -10,6 +10,7 @@ from tools.environments.base_output import _ThreadedProcessHandle
 
 from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
 from .lifecycle import Clock, UseMarker
+from .sandbox_spec import DEFAULT_PROFILE
 
 logger = logging.getLogger(__name__)
 
@@ -43,26 +44,33 @@ class K8sSandboxEnvironment(BaseEnvironment):
         image: str,
         cwd: str,
         timeout: int,
+        profile: str = DEFAULT_PROFILE,
         ready_timeout: float = READY_TIMEOUT_SECONDS,
+        extra_labels: dict[str, str] | None = None,
         clock: Clock = time.time,
     ):
         super().__init__(cwd=cwd, timeout=timeout)
         self._cluster = cluster
         self._task_id = task_id
         self._ready_timeout = ready_timeout
-        self.sandbox_name = sandbox_name(task_id)
+        self.sandbox_name = sandbox_name(task_id, profile)
+        self._extra_labels = extra_labels or {}
         self._use = UseMarker(cluster, self.sandbox_name, clock)
-        self._open_sandbox(image)
+        self._open_sandbox(image, profile)
         if cwd == "~":
             self.cwd = self._resolve_home(cwd)
         self.init_session()
 
-    def _open_sandbox(self, image: str) -> None:
+    def _open_sandbox(self, image: str, profile: str) -> None:
         """Create the sandbox, or resume the one of the same task id."""
         status = self._cluster.get_sandbox(self.sandbox_name)
         if status is None:
+            # An existing sandbox keeps its labels. A changed allowance applies only to a new sandbox.
             self._cluster.create_sandbox(
-                self.sandbox_name, image=image, labels={"hermes-task": self.sandbox_name}
+                self.sandbox_name,
+                image=image,
+                labels={"hermes-task": self.sandbox_name, **self._extra_labels},
+                profile=profile,
             )
             logger.info("Created sandbox %s", self.sandbox_name)
         elif status.operating_mode == SUSPENDED:
