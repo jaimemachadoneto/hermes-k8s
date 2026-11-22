@@ -35,7 +35,8 @@ let
     which
     python3
     nix
-    direnv
+    # direnv of nixos-26.05 has an old golang.org/x/mod with HIGH CVEs (the release scan).
+    pkgs-unstable.direnv
     pkgs-unstable.devenv
   ];
 

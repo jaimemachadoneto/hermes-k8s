@@ -59,14 +59,19 @@ jobs:
 
       # Scan the images before the push. A failed scan keeps the image off the registry.
       # The scan looks at the tarball, so it needs no registry and no daemon.
+      # .trivyignore.yaml holds the accepted findings, each with a reason and an expiry.
+      # Scan each image before the step fails, so one run shows all the findings.
       - name: Scan the images
         run: |
           set -euo pipefail
+          failed=0
           for attr in sandbox-image hermes-image; do
             out=$(nix build ".#$attr" --no-link --print-out-paths)
             nix shell --inputs-from . nixpkgs#trivy -c trivy image \
-              --input "$out" --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+              --input "$out" --severity HIGH,CRITICAL --ignore-unfixed \
+              --ignorefile .trivyignore.yaml --exit-code 1 || failed=1
           done
+          exit "$failed"
 
       - name: Push the images
         id: push
