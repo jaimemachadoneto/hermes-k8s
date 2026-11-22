@@ -88,7 +88,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         argv = ["bash", *(["-l"] if login else []), "-c", cmd_string]
 
         def exec_fn() -> tuple[str, int]:
-            # The idle clock runs from the end of the last command.
+            # Mark at the start and at the end, so a long command does not look idle.
             self._use.mark()
             try:
                 result = self._cluster.exec(self.sandbox_name, argv, timeout=timeout, cancel=cancel)

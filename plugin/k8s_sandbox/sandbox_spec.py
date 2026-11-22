@@ -28,7 +28,12 @@ _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
 # TODO: Make the Job that builds the Nix base write the marker.
 _COPY_CLOSURE = """\
 set -eu
-mkdir -p /data/nix /data/workspace/.home
+mkdir -p /data/nix /data/workspace
+# An older sandbox kept its home in /data/home. Move it into the workspace once.
+if [ -d /data/home ] && [ ! -e /data/workspace/.home ]; then
+  cp -a /data/home /data/workspace/.home
+fi
+mkdir -p /data/workspace/.home
 if [ ! -e /data/nix/.closure-copied ]; then
   if [ -e /data/nix/store ]; then
     chmod -R u+w /data/nix/store
@@ -112,7 +117,8 @@ def build_sandbox(name: str, *, image: str, labels: dict[str, str]) -> dict:
                             "name": SHELL,
                             "image": image,
                             "securityContext": _security_context(),
-                            # The image sets HOME to a read-only path. A plain value passes the policy.
+                            # The image sets HOME to a read-only path. A plain value passes the policy `hermes-sandbox-pod`
+                            # (it refuses only `valueFrom` and `envFrom`).
                             "env": [{"name": "HOME", "value": HOME}],
                             "volumeMounts": [
                                 {"name": VOLUME, "mountPath": "/nix", "subPath": "nix"},

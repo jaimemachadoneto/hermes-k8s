@@ -144,10 +144,11 @@ class FakeCluster:
         return [sandbox.status() for sandbox in list(self.sandboxes.values())]
 
     def mark_used(self, name: str, at: float) -> None:
-        sandbox = self.sandboxes.get(name)
-        if sandbox is None:
-            raise SandboxNotFound(name)
-        sandbox.last_used = at
+        with self._lock:
+            sandbox = self.sandboxes.get(name)
+            if sandbox is None:
+                raise SandboxNotFound(name)
+            sandbox.last_used = at
 
     def delete_sandbox(self, name: str) -> None:
         with self._lock:

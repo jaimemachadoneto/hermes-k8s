@@ -217,12 +217,26 @@ def test_an_image_with_a_digest_is_accepted_with_and_without_a_tag():
     validate_image(IMAGE)
 
 
-def test_the_home_is_in_the_workspace_volume_and_the_tmp_is_an_empty_dir():
+def test_the_home_is_in_the_workspace_volume():
     container = make()["spec"]["podTemplate"]["spec"]["containers"][0]
-    pod = make()["spec"]["podTemplate"]["spec"]
 
     assert {"name": "HOME", "value": "/workspace/.home"} in container["env"]
     # The home is inside /workspace, so one mount keeps both through a suspend.
     assert "/home/sandbox" not in {m["mountPath"] for m in container["volumeMounts"]}
+
+
+def test_the_tmp_is_an_empty_dir():
+    pod = make()["spec"]["podTemplate"]["spec"]
+    container = pod["containers"][0]
+
     assert {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}} in pod["volumes"]
     assert {"name": "tmp", "mountPath": "/tmp"} in container["volumeMounts"]
+
+
+def test_the_init_step_moves_an_older_home_into_the_workspace(tmp_path):
+    (tmp_path / "data" / "home").mkdir(parents=True)
+    (tmp_path / "data" / "home" / ".bashrc").write_text("old")
+
+    data = _run_init_script(tmp_path, marker=True, half_copy=False)
+
+    assert (data / "workspace" / ".home" / ".bashrc").read_text() == "old"

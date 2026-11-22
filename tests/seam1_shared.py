@@ -85,7 +85,7 @@ def test_a_sandbox_that_nobody_suspended_is_attached_again_by_the_next_environme
 
     assert second.sandbox_name == first.sandbox_name
     assert second.execute("cat note.txt")["output"].strip() == "kept"
-    assert len(cluster.list_sandboxes()) == 1
+    assert [s.name for s in cluster.list_sandboxes()].count(first.sandbox_name) == 1
 
 
 def test_each_task_id_has_its_own_sandbox_and_the_same_id_has_the_same_one(make_env):

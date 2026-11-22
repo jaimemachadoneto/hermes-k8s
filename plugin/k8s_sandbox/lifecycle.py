@@ -45,22 +45,42 @@ class UseMarker:
         self._last = now
 
 
-def suspend_idle(cluster: Cluster, *, now: float, idle_seconds: float = IDLE_SECONDS) -> list[str]:
+def suspend_idle(
+    cluster: Cluster,
+    *,
+    now: float,
+    idle_seconds: float = IDLE_SECONDS,
+    only: Callable[[str], bool] = lambda name: True,
+) -> list[str]:
     """Suspend each running sandbox that was idle for more than `idle_seconds`.
 
     Call it once, when the process starts: it finds the sandboxes that an earlier process left
     running. Do not call it in a loop. It cannot see the background processes that Hermes tracks,
-    and the idle reaper of Hermes does that work while Hermes runs.
+    and the idle reaper of Hermes does that work while Hermes runs. A second Hermes process that
+    starts while the first one runs sees fresh last-use times, because each command marks one.
+    `only` limits the sweep to the sandboxes whose name it accepts (the live tests use it).
     A sandbox with no last-use time gets one now, so it is not suspended at once.
+    A failure on one sandbox does not stop the sweep.
     Return the names of the sandboxes that it suspended.
     """
     suspended = []
     for status in cluster.list_sandboxes():
-        if status.operating_mode == SUSPENDED:
+        if status.operating_mode != RUNNING or not only(status.name):
             continue
-        if status.last_used is None:
-            cluster.mark_used(status.name, now)
-        elif now - status.last_used > idle_seconds and status.operating_mode == RUNNING:
+        try:
+            if status.last_used is None:
+                cluster.mark_used(status.name, now)
+                continue
+            if now - status.last_used <= idle_seconds:
+                continue
+            # Read again: a command can have used the sandbox since the list.
+            fresh = cluster.get_sandbox(status.name)
+            if fresh is None or fresh.operating_mode != RUNNING:
+                continue
+            if fresh.last_used is not None and now - fresh.last_used <= idle_seconds:
+                continue
             cluster.set_operating_mode(status.name, SUSPENDED)
             suspended.append(status.name)
+        except ClusterError:
+            logger.warning("Could not sweep sandbox %s", status.name, exc_info=True)
     return suspended

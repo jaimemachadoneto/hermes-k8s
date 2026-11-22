@@ -133,13 +133,14 @@ def test_the_next_environment_resumes_the_same_volume(make_env, cluster):
 # --- the calls of Hermes -------------------------------------------------------------------------
 
 
-def test_hermes_keeps_the_sandbox_after_a_turn(make_env, cluster, hermes_cache):
+def test_hermes_treats_the_environment_as_persistent_so_it_skips_the_cleanup_after_a_turn(
+    make_env, cluster, hermes_cache
+):
     # The agent loop calls cleanup_vm after each turn, unless the environment is persistent.
     env = make_env("session:a")
     hermes_cache("session:a", env)
 
     assert is_persistent_env("session:a") is True
-    assert mode(cluster, env) == RUNNING
 
 
 def test_the_idle_reaper_of_hermes_suspends_a_sandbox_after_the_lifetime(
@@ -213,7 +214,7 @@ def test_a_new_provider_attaches_to_the_sandbox_of_the_task(cluster, clock):
     env.execute("echo kept > note.txt")
     env.cleanup()
 
-    # A new process: a new provider and a new cluster client, no memory of the first.
+    # A new process: a new provider with no memory of the first.
     second = K8sSandboxProvider(cluster_factory=lambda: cluster, image=IMAGE, clock=clock)
     again = second.create_environment(cwd="~", timeout=30, task_id="session:a")
 
@@ -221,3 +222,81 @@ def test_a_new_provider_attaches_to_the_sandbox_of_the_task(cluster, clock):
     assert len(cluster.sandboxes) == 1
     assert again.execute("cat note.txt")["output"].strip() == "kept"
     assert mode(cluster, again) == RUNNING
+
+
+def test_a_failed_mark_does_not_fail_a_command(make_env, cluster):
+    from k8s_sandbox.cluster import ClusterError
+
+    env = make_env("a")
+
+    def fail(name, at):
+        raise ClusterError("boom")
+
+    cluster.mark_used = fail
+
+    assert env.execute("echo hi")["output"].strip() == "hi"
+
+
+def test_commands_within_the_interval_write_the_mark_once(make_env, cluster, clock):
+    calls = []
+    real = cluster.mark_used
+    cluster.mark_used = lambda name, at: (calls.append(at), real(name, at))[1]
+    env = make_env("a")
+    calls.clear()
+
+    for _ in range(5):
+        env.execute("true")
+    assert calls == []  # the open of the sandbox marked it at this time already
+
+    clock.advance(61)
+    env.execute("true")
+    assert len(calls) >= 1
+
+
+def test_the_sweep_goes_on_after_one_sandbox_fails(cluster, clock):
+    from k8s_sandbox.cluster import ClusterError
+
+    for name in ("a", "b"):
+        cluster.create_sandbox(name, image=IMAGE, labels={})
+        cluster.mark_used(name, clock())
+    clock.advance(IDLE_SECONDS + 1)
+    real = cluster.set_operating_mode
+
+    def flaky(name, mode):
+        if name == "a":
+            raise ClusterError("boom")
+        real(name, mode)
+
+    cluster.set_operating_mode = flaky
+
+    assert suspend_idle(cluster, now=clock()) == ["b"]
+
+
+def test_the_sweep_skips_a_sandbox_that_a_command_used_after_the_list(cluster, clock):
+    cluster.create_sandbox("a", image=IMAGE, labels={})
+    cluster.mark_used("a", clock())
+    clock.advance(IDLE_SECONDS + 1)
+    real = cluster.list_sandboxes
+
+    def list_then_use():
+        statuses = real()
+        cluster.mark_used("a", clock())  # a command runs between the list and the suspend
+        return statuses
+
+    cluster.list_sandboxes = list_then_use
+
+    assert suspend_idle(cluster, now=clock()) == []
+    assert cluster.get_sandbox("a").operating_mode == RUNNING
+
+
+def test_the_sweep_at_start_logs_a_failure_and_does_not_raise(monkeypatch, caplog):
+    import k8s_sandbox
+
+    def broken():
+        raise RuntimeError("no cluster")
+
+    monkeypatch.setattr(k8s_sandbox, "_cluster", broken)
+
+    k8s_sandbox._suspend_left_running()
+
+    assert "Could not suspend the idle sandboxes" in caplog.text

@@ -80,7 +80,7 @@ class CancelToken:
 
 
 class Cluster(Protocol):
-    """The port has eight operations. They create, find, list, wait for, run in, mark, suspend and delete a sandbox.
+    """The port creates, finds, lists, waits for, runs in, marks, suspends and deletes a sandbox.
 
     Each operation raises a `ClusterError` (or a subclass) when the cluster fails it.
     """
