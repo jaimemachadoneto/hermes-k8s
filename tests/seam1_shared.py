@@ -74,6 +74,20 @@ def test_cleanup_suspends_the_sandbox_and_the_next_environment_of_the_task_resum
     assert cluster.get_sandbox(first.sandbox_name).operating_mode == "Running"
 
 
+def test_a_sandbox_that_nobody_suspended_is_attached_again_by_the_next_environment(
+    make_env, cluster
+):
+    # A Hermes that is killed (SIGKILL, OOM) never calls cleanup. The next process attaches by name.
+    first = make_env("task-crash")
+    first.execute("echo kept > note.txt")
+
+    second = make_env("task-crash")
+
+    assert second.sandbox_name == first.sandbox_name
+    assert second.execute("cat note.txt")["output"].strip() == "kept"
+    assert [s.name for s in cluster.list_sandboxes()].count(first.sandbox_name) == 1
+
+
 def test_each_task_id_has_its_own_sandbox_and_the_same_id_has_the_same_one(make_env):
     a = make_env("session:a")
     b = make_env("session:b")

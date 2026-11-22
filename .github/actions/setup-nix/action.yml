@@ -50,5 +50,17 @@ runs:
         "$nix_path/bin/nix-env" --profile "$profile" --set "$nix_path"
         rm -rf "$work"
         echo "installed=true" >> "$GITHUB_OUTPUT"
+    # The pod has fsGroup, so kubelet sets the setgid bit on /nix, and each
+    # new directory under it inherits the bit. The syscall filter of Nix
+    # refuses a chmod that keeps the setgid bit (EPERM). A build directory
+    # takes the bit from /nix/var/nix/builds, and a build output takes it
+    # from /nix/store, so clear the bit on both parents. Do not clear it on
+    # /nix: kubelet then sees a root mismatch and sets the bit again on the
+    # full volume. This step runs outside Nix, so the filter does not apply.
+    - shell: bash
+      run: |
+        set -euo pipefail
+        chmod g-s /nix/store /nix/var/nix/builds
+        ls -ldn /nix /nix/store /nix/var/nix/builds
     - shell: bash
       run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"

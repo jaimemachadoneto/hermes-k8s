@@ -11,21 +11,29 @@ import threading
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .sandbox_spec import DEFAULT_PROFILE
+
 NAMESPACE = "hermes-sandbox"
 RUNNING = "Running"
 SUSPENDED = "Suspended"
+# The annotation that holds the last-use time of a sandbox (seconds since the epoch). The idle
+# sweep and the TTL of a suspended sandbox read it.
+LAST_USED_ANNOTATION = "hermes-k8s/last-used"
 
 # A Kubernetes object name is at most 63 characters (a DNS label).
 _NAME_PREFIX = "hermes-"
 _NAME_HASH_LENGTH = 40
 
 
-def sandbox_name(task_id: str) -> str:
+def sandbox_name(task_id: str, profile: str = DEFAULT_PROFILE) -> str:
     """Name the sandbox of a task from a hash of its id.
 
-    The same id gives the same name. The hash keeps the name valid for any id.
+    The same id gives the same name. The hash keeps the name valid for any id. A profile that is
+    not the default is part of the hash, so a sandbox never runs with the tokens of another
+    profile. The name of the default profile stays as it was.
     """
-    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+    key = task_id if profile == DEFAULT_PROFILE else f"{task_id}\0{profile}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return f"{_NAME_PREFIX}{digest[:_NAME_HASH_LENGTH]}"
 
 
@@ -53,6 +61,7 @@ class SandboxStatus:
     operating_mode: str
     ready: bool
     suspended: bool
+    last_used: float | None = None
 
 
 @dataclass(frozen=True)
@@ -88,16 +97,23 @@ class CancelToken:
 
 
 class Cluster(Protocol):
-    """The port has eight operations. Six create, find, wait for, run in, suspend and delete a
-    sandbox. Two list and delete the Nix bases.
+    """The port creates, finds, lists, waits for, runs in, marks, suspends and deletes a sandbox.
+    It also lists and deletes the Nix bases.
 
     Each operation raises a `ClusterError` (or a subclass) when the cluster fails it.
     """
 
     def create_sandbox(
-        self, name: str, *, image: str, labels: dict[str, str], nix_base: str | None = None
+        self,
+        name: str,
+        *,
+        image: str,
+        labels: dict[str, str],
+        profile: str = DEFAULT_PROFILE,
+        nix_base: str | None = None,
     ) -> None:
-        """Create the Sandbox. Do nothing when it exists already.
+        """Create the Sandbox. It mounts the Secret of the profile. Do nothing when it exists
+        already.
 
         When `nix_base` names a VolumeSnapshot, the volume of the sandbox is a clone of it.
         Otherwise the volume is empty.
@@ -132,6 +148,14 @@ class Cluster(Protocol):
 
     def set_operating_mode(self, name: str, mode: str) -> None:
         """Set `operatingMode` to RUNNING or SUSPENDED."""
+        ...
+
+    def list_sandboxes(self) -> list[SandboxStatus]:
+        """Return the status of each Sandbox of the namespace."""
+        ...
+
+    def mark_used(self, name: str, at: float) -> None:
+        """Record `at` (seconds since the epoch) as the last-use time of the Sandbox."""
         ...
 
     def delete_sandbox(self, name: str) -> None:

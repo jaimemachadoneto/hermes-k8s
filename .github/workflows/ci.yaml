@@ -1,0 +1,33 @@
+name: ci
+
+# This workflow checks each pull request on the runner arc-jmn-nix. The Nix
+# store of the runner keeps its data between runs, so a pull request from a
+# fork never runs here.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arc-jmn-nix
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: arc-jmn-nix
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: ./.github/actions/setup-nix
+
+      - name: Flake check
+        run: nix flake check
+
+      # The tests need Python 3.14 and the Hermes package. uv installs both.
+      - name: Tests
+        run: nix shell --inputs-from . nixpkgs#uv nixpkgs#git -c uv run pytest

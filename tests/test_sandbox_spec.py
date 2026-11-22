@@ -39,6 +39,24 @@ def test_the_copy_of_the_rules_accepts_the_fixture_of_home_ops():
             lambda s: s["spec"]["podTemplate"]["spec"]["volumes"][0]["emptyDir"].pop("sizeLimit"),
             "volume",
         ),
+        (
+            lambda s: s["spec"]["podTemplate"]["spec"]["volumes"][1]["secret"].update(
+                secretName="ghcr-pull"
+            ),
+            "volume",
+        ),
+        (
+            lambda s: s["spec"]["podTemplate"]["spec"]["volumes"][1]["secret"].update(
+                secretName="hermes-sandbox-"
+            ),
+            "volume",
+        ),
+        (
+            lambda s: s["spec"]["podTemplate"]["spec"]["volumes"].append(
+                {"name": "h", "hostPath": {"path": "/"}}
+            ),
+            "volume",
+        ),
         (lambda s: s["spec"]["podTemplate"]["spec"]["initContainers"][0].update(name="x"), "init"),
         (
             lambda s: s["spec"]["podTemplate"]["spec"]["initContainers"][0].update(
@@ -100,7 +118,16 @@ def test_the_sandbox_has_the_shape_of_the_fixture_of_home_ops():
     # With no Nix base, the volume has no data source (it is empty).
     assert template["spec"] == {k: v for k, v in good_template["spec"].items() if k != "dataSource"}
     mounts = {(m["mountPath"], m.get("subPath")) for m in pod["containers"][0]["volumeMounts"]}
-    assert {("/nix", "nix"), ("/workspace", "workspace"), ("/tmp", None)} <= mounts
+    assert {
+        ("/nix", "nix"),
+        ("/workspace", "workspace"),
+        ("/tmp", None),
+        ("/run/secrets/github", None),
+    } <= mounts
+    secret_mount = next(
+        m for m in pod["containers"][0]["volumeMounts"] if m["mountPath"] == "/run/secrets/github"
+    )
+    assert secret_mount["readOnly"] is True
 
 
 def test_the_init_container_copies_the_closure_of_the_image_into_the_volume():
@@ -166,7 +193,7 @@ def test_the_init_step_copies_the_store_into_an_empty_volume(tmp_path):
 
     assert (data / "nix" / "store" / "pkg" / "bin" / "tool").read_text() == "tool"
     assert (data / "nix" / ".closure-copied").exists()
-    assert (data / "workspace").is_dir() and (data / "home").is_dir()
+    assert (data / "workspace" / ".home").is_dir()
 
 
 def test_the_init_step_registers_the_paths_of_the_image_in_the_database_of_the_volume(tmp_path):
@@ -214,7 +241,15 @@ def test_the_pod_has_no_service_account_token_secret_or_service_link():
 
     assert pod["automountServiceAccountToken"] is False
     assert pod["enableServiceLinks"] is False
-    assert "secret" not in text.lower().replace("imagepullsecrets", "")
+    # The one Secret is the one of the profile, mounted as files and never as variables.
+    assert [v["name"] for v in pod["volumes"]] == ["tmp", "github"]
+    assert [k for v in pod["volumes"] for k in v if k != "name"] == ["emptyDir", "secret"]
+    assert "secretKeyRef" not in text and "secretRef" not in text
+    # A plain value such as HOME is allowed. A value from a Secret is not.
+    for container in pod["containers"] + pod["initContainers"]:
+        assert "envFrom" not in container
+        for variable in container.get("env", []):
+            assert set(variable) == {"name", "value"}, variable
     assert "valueFrom" not in text
     for container in pod["containers"] + pod["initContainers"]:
         context = container["securityContext"]
@@ -253,3 +288,28 @@ def test_an_image_without_a_sha256_digest_is_refused(image):
 def test_an_image_with_a_digest_is_accepted_with_and_without_a_tag():
     validate_image("ghcr.io/jaimemachadoneto/hermes-sandbox@sha256:" + "a" * 64)
     validate_image(IMAGE)
+
+
+def test_the_home_is_in_the_workspace_volume():
+    container = make()["spec"]["podTemplate"]["spec"]["containers"][0]
+
+    assert {"name": "HOME", "value": "/workspace/.home"} in container["env"]
+    # The home is inside /workspace, so one mount keeps both through a suspend.
+    assert "/home/sandbox" not in {m["mountPath"] for m in container["volumeMounts"]}
+
+
+def test_the_tmp_is_an_empty_dir():
+    pod = make()["spec"]["podTemplate"]["spec"]
+    container = pod["containers"][0]
+
+    assert {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}} in pod["volumes"]
+    assert {"name": "tmp", "mountPath": "/tmp"} in container["volumeMounts"]
+
+
+def test_the_init_step_moves_an_older_home_into_the_workspace(tmp_path):
+    (tmp_path / "data" / "home").mkdir(parents=True)
+    (tmp_path / "data" / "home" / ".bashrc").write_text("old")
+
+    data = _run_init_script(tmp_path, marker=True, half_copy=False)
+
+    assert (data / "workspace" / ".home" / ".bashrc").read_text() == "old"

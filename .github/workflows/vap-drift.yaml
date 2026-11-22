@@ -1,0 +1,38 @@
+name: vap-drift
+
+# tests/vap_rules.py is a Python copy of the admission policy in home-ops. This
+# workflow compares the image pattern of both. It does not run on every pull
+# request. A change in home-ops must not block an unrelated change here.
+on:
+  pull_request:
+    paths:
+      - tests/vap_rules.py
+      - scripts/check-vap-drift.py
+      - .github/workflows/vap-drift.yaml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: arc-jmn-nix
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          repository: jaimemachadoneto/home-ops
+          token: ${{ secrets.MY_PAT }}
+          path: gitops
+          sparse-checkout: kubernetes/apps/hermes-sandbox/sandbox-tenant/app
+
+      - name: Compare the image pattern
+        run: python3 scripts/check-vap-drift.py gitops/kubernetes/apps/hermes-sandbox/sandbox-tenant/app/validatingadmissionpolicy.yaml

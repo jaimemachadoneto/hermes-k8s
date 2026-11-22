@@ -11,8 +11,18 @@ NAMESPACE = "hermes-sandbox"
 VOLUME = "data"
 API_VERSION = "agents.x-k8s.io/v1beta1"
 SHELL = "shell"
+# The home is in the workspace mount, so one volume path keeps the files and the dotfiles.
+HOME = "/workspace/.home"
 INIT = "copy-closure"
 UID = 10000
+# The Secret of a profile (ADR 0008). The admission policy allows only this name pattern.
+SECRET_PREFIX = "hermes-sandbox-"
+SECRET_VOLUME = "github"
+SECRET_PATH = "/run/secrets/github"
+DEFAULT_PROFILE = "default"
+# A profile id of Hermes may have "_", and a Secret name may not. The code refuses a profile
+# that a Secret name cannot hold, so that no two profiles share one Secret.
+_PROFILE = re.compile(r"[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?")
 
 # The policy pins the image by digest, so a tag that moves cannot change a sandbox.
 _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
@@ -21,15 +31,20 @@ _DIGEST = re.compile(r".+@sha256:[a-f0-9]{64}")
 # into the volume. The marker `.closure-copied` shows that a copy is complete. If the volume
 # has the marker, it is a Nix base or an earlier copy, and the step does nothing. If the
 # volume has no marker, the step removes the incomplete copy first. The store is read-only,
-# so run `chmod` before `rm`. The workspace and the home are in the volume too. `mkdir -p`
-# keeps the files that a Nix base has.
+# so run `chmod` before `rm`. The workspace and the home (`/workspace/.home`) are in the volume
+# too. `mkdir -p` keeps the files that a Nix base has.
 # The Job that builds a Nix base writes the marker too (`nix-base-build` in the image).
 # Nix knows a store path only when its database lists the path. The image has the list of its
 # own paths at /etc/nix/registration, and the step loads it into the database of the volume.
 # Without it, Nix downloads each path of the image again.
 _COPY_CLOSURE = """\
 set -eu
-mkdir -p /data/nix /data/workspace /data/home
+mkdir -p /data/nix /data/workspace
+# An older sandbox kept its home in /data/home. Copy it into the workspace once. The old directory stays.
+if [ -d /data/home ] && [ ! -e /data/workspace/.home ]; then
+  cp -a /data/home /data/workspace/.home
+fi
+mkdir -p /data/workspace/.home
 if [ ! -e /data/nix/.closure-copied ]; then
   if [ -e /data/nix/store ]; then
     chmod -R u+w /data/nix/store
@@ -51,6 +66,13 @@ def validate_image(image: str) -> None:
     """Raise ValueError unless the image reference has a sha256 digest."""
     if not _DIGEST.fullmatch(image):
         raise ValueError(f"the sandbox image must have a sha256 digest: {image!r}")
+
+
+def secret_name(profile: str) -> str:
+    """Return the name of the Secret of a profile. Raise ValueError when the name is not valid for a Secret."""
+    if not _PROFILE.fullmatch(profile):
+        raise ValueError(f"the profile has no valid name for a Secret: {profile!r}")
+    return SECRET_PREFIX + profile
 
 
 def _security_context() -> dict:
@@ -81,13 +103,19 @@ def _volume_spec(nix_base: str | None) -> dict:
 
 
 def build_sandbox(
-    name: str, *, image: str, labels: dict[str, str], nix_base: str | None = None
+    name: str,
+    *,
+    image: str,
+    labels: dict[str, str],
+    profile: str = DEFAULT_PROFILE,
+    nix_base: str | None = None,
 ) -> dict:
-    """Return the Sandbox object. The object holds no secret and no token.
+    """Return the Sandbox object. It names the Secret of the profile and holds no token.
 
     With `nix_base`, the volume is a clone of that VolumeSnapshot. Without it, the volume is empty.
     """
     validate_image(image)
+    secret = secret_name(profile)
     return {
         "apiVersion": API_VERSION,
         "kind": "Sandbox",
@@ -143,15 +171,22 @@ def build_sandbox(
                             "name": SHELL,
                             "image": image,
                             "securityContext": _security_context(),
+                            # The image sets HOME to a read-only path. A plain value passes the policy `hermes-sandbox-pod`
+                            # (it refuses only `valueFrom` and `envFrom`).
+                            "env": [{"name": "HOME", "value": HOME}],
                             "volumeMounts": [
                                 {"name": VOLUME, "mountPath": "/nix", "subPath": "nix"},
                                 {"name": VOLUME, "mountPath": "/workspace", "subPath": "workspace"},
-                                {"name": VOLUME, "mountPath": "/home/sandbox", "subPath": "home"},
                                 {"name": "tmp", "mountPath": "/tmp"},
+                                {"name": SECRET_VOLUME, "mountPath": SECRET_PATH, "readOnly": True},
                             ],
                         }
                     ],
-                    "volumes": [{"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}}],
+                    "volumes": [
+                        {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}},
+                        # Optional: a profile with no tokens still gets a sandbox.
+                        {"name": SECRET_VOLUME, "secret": {"secretName": secret, "optional": True}},
+                    ],
                 },
             },
             "volumeClaimTemplates": [

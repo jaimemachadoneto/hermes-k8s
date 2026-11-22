@@ -27,7 +27,7 @@ from .cluster import (
     SandboxNotReady,
     SandboxStatus,
 )
-from .sandbox_spec import VOLUME
+from .sandbox_spec import DEFAULT_PROFILE, SECRET_PATH, SECRET_VOLUME, VOLUME, build_sandbox
 
 _POLL_SECONDS = 0.02
 _TEMPLATE = VOLUME
@@ -41,6 +41,10 @@ class FakeSandbox:
     directory: Path
     operating_mode: str = RUNNING
     ready: bool = True
+    last_used: float | None = None
+    # The Secret that the Sandbox object mounts, and the path of the mount.
+    secret_name: str = ""
+    secret_mount_path: str = ""
     # The name of the Nix base that the volume was cloned from, or None for an empty volume.
     nix_base: str | None = None
 
@@ -55,7 +59,7 @@ class FakeSandbox:
     def status(self) -> SandboxStatus:
         suspended = self.operating_mode == SUSPENDED
         return SandboxStatus(
-            self.name, self.operating_mode, self.ready and not suspended, suspended
+            self.name, self.operating_mode, self.ready and not suspended, suspended, self.last_used
         )
 
 
@@ -65,12 +69,33 @@ class FakeCluster:
     sandboxes: dict[str, FakeSandbox] = field(default_factory=dict)
     # Set it to make each new sandbox stay without a ready pod.
     never_ready: bool = False
+    # The Secrets of the namespace: name to files. A sandbox sees the files of its Secret in a
+    # directory that stands for the mount path (the variable GITHUB_SECRETS_DIR).
+    secrets: dict[str, dict[str, str]] = field(default_factory=dict)
+    # The login script that the image of a real sandbox sets in BASH_ENV.
+    bash_env: str = ""
+    # Each exec request that the cluster received: the argv and the stdin.
+    exec_log: list[tuple[list[str], bytes | None]] = field(default_factory=list)
     nix_bases: list[NixBase] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def create_sandbox(
-        self, name: str, *, image: str, labels: dict[str, str], nix_base: str | None = None
+        self,
+        name: str,
+        *,
+        image: str,
+        labels: dict[str, str],
+        profile: str = DEFAULT_PROFILE,
+        nix_base: str | None = None,
     ) -> None:
+        # The real object decides which Secret the pod mounts.
+        body = build_sandbox(name, image=image, labels=labels, profile=profile, nix_base=nix_base)
+        pod = body["spec"]["podTemplate"]["spec"]
+        secret = next(
+            v["secret"]["secretName"] for v in pod["volumes"] if v["name"] == SECRET_VOLUME
+        )
+        mount = next(m for m in pod["containers"][0]["volumeMounts"] if m["name"] == SECRET_VOLUME)
+        assert mount["readOnly"] and mount["mountPath"] == SECRET_PATH
         with self._lock:
             if name in self.sandboxes:
                 return
@@ -80,7 +105,14 @@ class FakeCluster:
             # in its profile, so the fake does the same for the tools of the test process.
             (directory / ".bash_profile").write_text(f"export PATH={os.environ.get('PATH', '')}\n")
             self.sandboxes[name] = FakeSandbox(
-                name, image, dict(labels), directory, ready=not self.never_ready, nix_base=nix_base
+                name,
+                image,
+                dict(labels),
+                directory,
+                ready=not self.never_ready,
+                secret_name=secret,
+                secret_mount_path=mount["mountPath"],
+                nix_base=nix_base,
             )
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
@@ -115,6 +147,16 @@ class FakeCluster:
             raise ClusterError(f"sandbox {name} has no running pod")
         # The pod gets no secret of the test process: only a path and a home.
         env = {"PATH": os.environ.get("PATH", ""), "HOME": str(sandbox.directory)}
+        self.exec_log.append((list(argv), stdin))
+        files = self.secrets.get(sandbox.secret_name)
+        if files is not None:
+            mount = sandbox.directory.parent / f"{name}-secret"
+            mount.mkdir(exist_ok=True)
+            for key, value in files.items():
+                (mount / key).write_text(value + "\n")
+            env["GITHUB_SECRETS_DIR"] = str(mount)
+        if self.bash_env:
+            env["BASH_ENV"] = self.bash_env
         proc = subprocess.Popen(
             argv,
             cwd=sandbox.directory,
@@ -144,6 +186,16 @@ class FakeCluster:
         if sandbox is None:
             raise SandboxNotFound(name)
         sandbox.operating_mode = mode
+
+    def list_sandboxes(self) -> list[SandboxStatus]:
+        return [sandbox.status() for sandbox in list(self.sandboxes.values())]
+
+    def mark_used(self, name: str, at: float) -> None:
+        with self._lock:
+            sandbox = self.sandboxes.get(name)
+            if sandbox is None:
+                raise SandboxNotFound(name)
+            sandbox.last_used = at
 
     def delete_sandbox(self, name: str) -> None:
         with self._lock:

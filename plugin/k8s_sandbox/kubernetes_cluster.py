@@ -22,6 +22,7 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes.stream import stream
 
 from .cluster import (
+    LAST_USED_ANNOTATION,
     SUSPENDED,
     CancelToken,
     ClusterError,
@@ -33,7 +34,7 @@ from .cluster import (
     SandboxStatus,
 )
 from .nix_base import KIND, LABEL_DIGEST, LABEL_KIND
-from .sandbox_spec import API_VERSION, NAMESPACE, SHELL, VOLUME, build_sandbox
+from .sandbox_spec import API_VERSION, DEFAULT_PROFILE, NAMESPACE, SHELL, VOLUME, build_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +133,15 @@ class KubernetesCluster:
         )
 
     def create_sandbox(
-        self, name: str, *, image: str, labels: dict[str, str], nix_base: str | None = None
+        self,
+        name: str,
+        *,
+        image: str,
+        labels: dict[str, str],
+        profile: str = DEFAULT_PROFILE,
+        nix_base: str | None = None,
     ) -> None:
-        body = build_sandbox(name, image=image, labels=labels, nix_base=nix_base)
+        body = build_sandbox(name, image=image, labels=labels, profile=profile, nix_base=nix_base)
         try:
             self._custom.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, PLURAL, body)
         except ApiException as error:
@@ -162,7 +169,12 @@ class KubernetesCluster:
             c.get("type") == "Ready" and c.get("status") == "True"
             for c in item.get("status", {}).get("conditions", [])
         )
-        return SandboxStatus(name, mode, ready and not suspended, suspended)
+        stamp = (item.get("metadata", {}).get("annotations") or {}).get(LAST_USED_ANNOTATION)
+        try:
+            last_used = float(stamp) if stamp is not None else None
+        except ValueError:
+            last_used = None
+        return SandboxStatus(name, mode, ready and not suspended, suspended, last_used)
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
         item = self._read(name)
@@ -253,6 +265,26 @@ class KubernetesCluster:
             )
         except ApiException as error:
             raise _map(error, f"set the mode of sandbox {name}") from None
+
+    def list_sandboxes(self) -> list[SandboxStatus]:
+        try:
+            result = self._custom.list_namespaced_custom_object(GROUP, VERSION, NAMESPACE, PLURAL)
+        except ApiException as error:
+            raise _map(error, "list the sandboxes") from None
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"list the sandboxes: {type(error).__name__}") from None
+        return [self._status(i["metadata"]["name"], i) for i in result.get("items", [])]
+
+    def mark_used(self, name: str, at: float) -> None:
+        body = {"metadata": {"annotations": {LAST_USED_ANNOTATION: repr(at)}}}
+        try:
+            self._custom.patch_namespaced_custom_object(
+                GROUP, VERSION, NAMESPACE, PLURAL, name, body
+            )
+        except ApiException as error:
+            raise _map(error, f"mark the use of sandbox {name}") from None
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"mark the use of sandbox {name}: {type(error).__name__}") from None
 
     def delete_sandbox(self, name: str) -> None:
         for call, what in (
