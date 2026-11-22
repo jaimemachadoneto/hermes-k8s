@@ -39,6 +39,8 @@ let
     rm -rf $out/claude-subscription-directsdk/tests $out/claude-subscription-directsdk/evals
     mkdir $out/k8s_sandbox
     cp -r ${../plugin/k8s_sandbox}/. $out/k8s_sandbox
+    # The fake cluster is for tests only.
+    rm -f $out/k8s_sandbox/fake_cluster.py
     find $out -name __pycache__ -prune -exec rm -rf {} +
   '';
 

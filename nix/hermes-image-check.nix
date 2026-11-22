@@ -36,6 +36,14 @@ pkgs.runCommand "hermes-image-check"
     env_of() { cfg '(.config.Env // [])[]' | sed -n "s/^$1=//p"; }
     [ "$(env_of HOME)" = "/opt/data" ] || fail "HOME is $(env_of HOME), want /opt/data"
 
+    # ADR 0005: the image holds no token.
+    if cfg '(.config.Env // [])[]' | grep -qiE 'token|sk-ant-|api_key'; then
+      fail "the image environment holds a secret"
+    fi
+    if grep -rIlE 'sk-ant-(oat|api)[0-9]*-[A-Za-z0-9_-]{20,}' rootfs >/dev/null 2>&1; then
+      fail "a file of the image holds a token"
+    fi
+
     # A link in the image points into /nix/store, so resolve it in rootfs.
     resolve() {
       p=$1

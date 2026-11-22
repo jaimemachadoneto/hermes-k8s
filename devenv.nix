@@ -33,10 +33,16 @@
   # stays private.
   base.commands.push-hermes-image = [
     ''
+      set -eo pipefail
       out=$(nix build .#hermes-image --no-link --print-out-paths)
       ref="ghcr.io/jaimemachadoneto/hermes:$(basename "$out" | cut -c1-12)"
-      gh auth token | skopeo login ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null
-      skopeo --insecure-policy copy --quiet --digestfile /dev/stdout "docker-archive:$out" "docker://$ref" | sed "s|^|$ref@|"
+      # The auth file is temporary: the token never stays on disk.
+      auth=$(mktemp)
+      trap 'rm -f "$auth"' EXIT
+      gh auth token | skopeo login --authfile "$auth" ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null
+      digest=$(skopeo --insecure-policy copy --quiet --authfile "$auth" --digestfile /dev/stdout "docker-archive:$out" "docker://$ref")
+      [ -n "$digest" ] || { echo "push failed" >&2; exit 1; }
+      echo "$ref@$digest"
     ''
   ];
 
