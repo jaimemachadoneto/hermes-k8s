@@ -1,0 +1,37 @@
+# A Job in home-ops builds each Nix base, and the plugin selects and deletes it
+
+ADR 0003 says that a Job makes the Nix base. This ADR gives the parts of that Job.
+The pod of the Job has an ephemeral volume of 20Gi and three steps. The init step
+`copy-closure` runs `nix-base-build copy` with the volume at `/data`. The init step `warm`
+runs `nix-base-build warm` with the volume at `/nix`, so that `devenv shell` runs for each
+configured repository on the real paths of the store. The container `snapshot` makes the
+VolumeSnapshot (class `csi-ceph-blockpool`) with the labels `hermes-k8s/kind=nix-base` and
+`hermes-k8s/image-digest=<first 32 characters of the digest>`. It then deletes the volume to
+free the quota. The plugin selects the newest ready Nix base with the digest of its image. If
+none fits, the volume is empty. When it starts an environment, the plugin deletes the Nix
+bases except the two newest of each image.
+
+## Considered Options
+
+- The manifests in this repository, and a Flux source for it in home-ops: the repository is
+  private, so Flux needs one more credential. The digest of the image is in home-ops, and
+  Renovate changes it there. The manifests are in home-ops.
+- The GitHub Secret of a profile (`hermes-sandbox-<profile>`, ADR 0008) for the clone: the Job
+  belongs to no profile, and the Secret has the tokens that can push. The Job has its own
+  Secret `hermes-nix-base-github`. A sandbox cannot mount it.
+- A snapshot step that runs the same container as the build: the build step runs code of
+  the repositories, so it has no API token. Only the `snapshot` container has the token.
+
+## Consequences
+
+- The sandbox image has the list of its store paths at `/etc/nix/registration`. The init step
+  of a sandbox and `nix-base-build copy` load it into the Nix database of the volume. Without
+  it, Nix does not know the paths of the copy and downloads them again.
+- A Job in home-ops has the image digest in its own file. The digest of the Job must be
+  the digest in the HelmRelease of Hermes, or the plugin finds no Nix base for its image.
+- The Nix base must fit in 20Gi, the maximum size of a sandbox volume in the admission policy.
+- Flux replaces the Job when the image changes (`kustomize.toolkit.fluxcd.io/force`), and
+  the CronJob runs it each week.
+- A clone can hold a Nix base. If the CSI driver refuses to delete a snapshot that has a
+  clone, the snapshot stays until the clone goes. The next start of an environment tries
+  again.
