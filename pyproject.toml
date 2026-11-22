@@ -1,0 +1,47 @@
+[project]
+name = "hermes-k8s"
+version = "0.1.0"
+description = "Hermes terminal-backend plugin that gives each session its own sandbox in a Kubernetes cluster"
+requires-python = ">=3.14,<3.15"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "hermes-agent",
+]
+
+# The plugin directory is not an installable package. Hermes loads it from
+# HERMES_BUNDLED_PLUGINS, so the tests put it on the path by hand.
+[tool.uv]
+package = false
+
+# Hermes is a test dependency only. The tag is v0.23.3 (ADR 0006: never use a
+# calendar tag).
+# Hermes keeps these overrides in its own [tool.uv] table, and uv does not read
+# the table of a dependency. Without them, browser-harness holds Pillow below 13.
+override-dependencies = [
+  "Pillow==13.0.0",
+  "cryptography==50.0.2",
+]
+
+# The setup.py of Hermes refuses to build a wheel unless this variable is set.
+# Hermes sets it for its own Nix build. A test dependency needs the wheel.
+[tool.uv.extra-build-variables]
+hermes-agent = { HERMES_NIX_BUILD = "1" }
+
+[tool.uv.sources]
+hermes-agent = { git = "https://github.com/NousResearch/hermes-agent", tag = "v0.23.3" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["plugin"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.pyright]
+include = ["plugin", "tests"]
+pythonVersion = "3.14"
+extraPaths = ["plugin"]
