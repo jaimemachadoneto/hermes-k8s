@@ -1,7 +1,7 @@
 """The cluster port: the small interface between the plugin and Kubernetes.
 
 The environment of the plugin talks only to this port. The `FakeCluster` keeps the
-objects in memory for tests. A later ticket adds a client of the real API behind it.
+objects in memory for tests. `KubernetesCluster` is the client of the real API behind it.
 """
 
 from __future__ import annotations
@@ -39,6 +39,10 @@ class SandboxNotFound(ClusterError):
 
 class SandboxNotReady(ClusterError):
     """The sandbox does not become ready before the deadline."""
+
+
+class QuotaExceeded(ClusterError):
+    """The ResourceQuota of the namespace refuses the object. The message names the quota."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,8 @@ class Cluster(Protocol):
         """Run `argv` in the pod of the Sandbox. Stderr joins the output.
 
         When `cancel` is set, return exit code 130. After `timeout` seconds, return exit code 124.
+        The real cluster closes the stream but does not kill the remote process: it stops when the
+        sandbox is suspended.
         Raise `SandboxNotFound` when the Sandbox does not exist, and `ClusterError` when it has no pod.
         """
         ...

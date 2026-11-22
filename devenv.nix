@@ -12,6 +12,17 @@
   # `check` stays the verb of the Python stack. This verb reads the image.
   base.commands.flake-check = [ "nix flake check" ];
 
+  # The live suite runs against the real cluster, only on request. `kubeconfig-live` writes
+  # the kubeconfig that it needs. See tests/live/conftest.py.
+  base.commands.smoke-live = [
+    ''
+      : "''${KUBECONFIG:?run kubeconfig-live first and export KUBECONFIG}"
+      HERMES_K8S_LIVE=1 python -m pytest tests/live -m live -v "$@"
+    ''
+  ];
+
+  base.commands.kubeconfig-live = [ "scripts/kubeconfig-live.sh" ];
+
   base.commands.build = [
     "nix build .#sandbox-image --no-link"
     "nix build .#hermes-image --no-link"
