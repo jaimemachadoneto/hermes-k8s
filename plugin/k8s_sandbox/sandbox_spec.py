@@ -55,6 +55,12 @@ if [ ! -e /data/nix/.closure-copied ]; then
   nix-store --store 'local?root=/data' --load-db < /etc/nix/registration
   touch /data/nix/.closure-copied
 fi
+# fsGroup gives the volume the setgid bit, and each new directory inherits it. The syscall filter
+# of Nix refuses a chmod that keeps the bit, so a build fails. Nix builds in var/nix/builds and
+# writes its outputs in store, so clear the bit there. Do not clear it on the root of the volume:
+# the kubelet then sees a mismatch and sets the bit again on the full volume.
+mkdir -p /data/nix/var/nix/builds
+chmod g-s /data/nix/store /data/nix/var/nix/builds
 """
 
 # A VolumeSnapshot name has at most 253 characters: lowercase letters, digits, '-' and '.'.

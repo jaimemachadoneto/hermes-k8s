@@ -16,6 +16,7 @@
 #   NIX_BASE_TOKEN_FILE    /run/secrets/github/GITHUB_TOKEN  the token for the private repositories
 #   NIX_BASE_WORK          /tmp/nix-base                  the directory for the clones
 #   NIX_BASE_DEVENV        devenv                         the devenv command
+#   NIX_BASE_NIX_ROOT      /nix                           the volume, as `warm` mounts it
 #   NIX_BASE_NIX           nix                            the nix command, for a flake shell
 set -euo pipefail
 
@@ -27,7 +28,17 @@ git_url=${NIX_BASE_GIT_URL:-https://github.com}
 token_file=${NIX_BASE_TOKEN_FILE:-/run/secrets/github/GITHUB_TOKEN}
 work=${NIX_BASE_WORK:-/tmp/nix-base}
 devenv=${NIX_BASE_DEVENV:-devenv}
+nix_root=${NIX_BASE_NIX_ROOT:-/nix}
 nix=${NIX_BASE_NIX:-nix}
+
+# fsGroup gives the volume the setgid bit, and each new directory inherits it. The syscall filter
+# of Nix refuses a chmod that keeps the bit, so a build fails. Nix builds in var/nix/builds and
+# writes its outputs in store, so clear the bit there. Do not clear it on the root of the volume:
+# the kubelet then sees a mismatch and sets the bit again on the full volume.
+clear_setgid() {
+  mkdir -p "$1/var/nix/builds"
+  chmod g-s "$1/store" "$1/var/nix/builds"
+}
 
 copy() {
   mkdir -p "$target/nix" "$target/workspace" "$target/home"
@@ -35,6 +46,7 @@ copy() {
   # this volume finds the marker and does nothing.
   if [ -e "$target/nix/.closure-copied" ]; then
     echo "nix-base-build: the volume has a complete copy already"
+    clear_setgid "$target/nix"
     return
   fi
   if [ -e "$target/nix/store" ]; then
@@ -47,6 +59,7 @@ copy() {
   # The store of the image is read-only, and Nix writes `.links` into the store that it opens.
   # The root of the store URL sends the store, the database and the logs to the volume.
   nix-store --store "local?root=$target" --load-db <"$registration"
+  clear_setgid "$target/nix"
   touch "$target/nix/.closure-copied"
 }
 
@@ -85,6 +98,7 @@ clone() {
 # A repository has a devenv shell (devenv.nix) or a flake shell (flake.nix, as home-ops).
 # devenv wins when a repository has both, because its shell is the one that the users enter.
 warm() {
+  clear_setgid "$nix_root"
   for repo in $repos; do
     dir=$work/$(basename "$repo")
     if [ -e "$dir/devenv.nix" ]; then
