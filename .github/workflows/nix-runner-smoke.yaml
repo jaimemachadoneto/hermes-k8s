@@ -17,10 +17,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: arc-jmn-nix
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: arc-jmn-nix
