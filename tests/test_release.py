@@ -135,7 +135,7 @@ def test_set_image_refs_keeps_the_snapshot_image_of_the_nix_base(tmp_path):
 
 
 def test_set_image_refs_gives_the_helmrelease_and_the_nix_base_the_same_reference(tmp_path):
-    result, helm, nix_base = set_nix_base(tmp_path, SANDBOX)
+    result, helm, _ = set_nix_base(tmp_path, SANDBOX)
 
     assert result.returncode == 0, result.stderr
     assert f"HERMES_K8S_SANDBOX_IMAGE: {SANDBOX}" in helm.read_text()
@@ -359,8 +359,8 @@ def test_release_jobs_run_on_hosted_runners_with_least_privilege():
 def test_release_does_not_build_or_install_nix():
     text = (ROOT / ".github" / "workflows" / "release.yaml").read_text()
 
-    # The file name nix-base.yaml and the variable NIX_BASE_FILE are not an install of Nix.
-    text = re.sub(r"nix-base\.yaml|NIX_BASE_FILE", "", text)
+    # The file name nix-base.yaml the option --nix-base-file and the variable NIX_BASE_FILE are not an install of Nix.
+    text = re.sub(r"nix-base\.yaml|--nix-base-file|NIX_BASE_FILE", "", text)
     assert not re.search(r"\bnix\b|cachix|determinate", text, re.IGNORECASE)
     assert "trivy" not in text
     assert "publish-image.sh" not in text
@@ -402,7 +402,6 @@ def test_release_opens_the_pull_request_with_the_secret_of_the_other_repositorie
 
 def test_the_gitops_job_pins_the_nix_base_in_the_same_pull_request():
     wf = workflow("release.yaml")
-    text = (ROOT / ".github" / "workflows" / "release.yaml").read_text()
     step = next(s for s in wf["jobs"]["gitops"]["steps"] if "set-image-refs" in s.get("run", ""))
     pr = next(
         s for s in wf["jobs"]["gitops"]["steps"] if "create-pull-request" in s.get("uses", "")
