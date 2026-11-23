@@ -246,10 +246,11 @@ def steps_text(wf):
     return json.dumps(wf)
 
 
-def test_release_runs_on_a_version_tag_only():
+def test_release_runs_on_a_version_tag_or_the_button():
     wf = workflow("release.yaml")
 
-    assert wf["on"] == {"push": {"tags": ["v[0-9]+.[0-9]+.[0-9]+"]}}
+    assert wf["on"]["push"] == {"tags": ["v[0-9]+.[0-9]+.[0-9]+"]}
+    assert set(wf["on"]) == {"push", "workflow_dispatch"}
 
 
 def test_release_jobs_run_on_hosted_runners_with_least_privilege():
@@ -277,7 +278,7 @@ def test_release_waits_for_the_ci_run_of_the_commit_on_main():
     steps = wf["jobs"]["promote"]["steps"]
     wait = next(s for s in steps if "wait-for-ci.sh" in s.get("run", ""))
 
-    assert 'scripts/wait-for-ci.sh "$GITHUB_SHA"' in wait["run"]
+    assert 'scripts/wait-for-ci.sh "$RELEASE_SHA"' in wait["run"]
     assert wait["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
     # The wait (45 min at most) must fit in the time limit of the job.
     assert wf["jobs"]["promote"]["timeout-minutes"] >= 60
@@ -290,7 +291,7 @@ def test_release_copies_the_ci_images_with_the_promote_script():
     wf = workflow("release.yaml")
     step = next(s for s in wf["jobs"]["promote"]["steps"] if "promote-image.sh" in s.get("run", ""))
 
-    assert "sha-$COMMIT" in step["run"]
+    assert '"sha-$RELEASE_SHA"' in step["run"]
     assert "$VERSION" in step["run"] or "$version" in step["run"]
     for image in ("SANDBOX_IMAGE", "HERMES_IMAGE"):
         assert image in step["run"]
@@ -588,3 +589,55 @@ def test_the_job_logs_in_to_the_registry_before_the_attestations():
 
     assert login < first
     assert "--password-stdin" in steps[login]["run"]
+
+
+# --- The release button --------------------------------------------------------------------
+
+
+def test_the_release_page_has_a_button_with_the_three_bumps():
+    dispatch = workflow("release.yaml")["on"]["workflow_dispatch"]
+
+    bump = dispatch["inputs"]["bump"]
+    assert bump["type"] == "choice"
+    assert bump["options"] == ["patch", "minor", "major"]
+    assert bump["default"] == "patch"
+
+
+def test_only_the_button_makes_a_tag_and_only_that_job_can_write():
+    wf = workflow("release.yaml")
+    tag = wf["jobs"]["tag"]
+
+    assert tag["if"] == "github.event_name == 'workflow_dispatch'"
+    assert tag["permissions"] == {"contents": "write"}
+    run = "\n".join(s.get("run", "") for s in tag["steps"])
+    assert 'scripts/next-version.sh "$BUMP"' in run
+    assert "main" in run and "::error::" in run
+    assert 'git push origin "refs/tags/$tag"' in run
+    for name, job in wf["jobs"].items():
+        if name != "tag":
+            assert job["permissions"].get("contents") == "read", name
+
+
+def test_promote_runs_after_the_button_and_after_a_tag_push():
+    wf = workflow("release.yaml")
+    promote = wf["jobs"]["promote"]
+
+    assert promote["needs"] == "tag"
+    # On a tag push, the job `tag` is skipped. promote must run then too.
+    assert "needs.tag.result == 'skipped'" in promote["if"]
+    assert "needs.tag.result == 'success'" in promote["if"]
+    assert promote["env"]["RELEASE_SHA"] == "${{ needs.tag.outputs.sha || github.sha }}"
+    assert promote["env"]["RELEASE_TAG"] == "${{ needs.tag.outputs.tag || github.ref_name }}"
+    assert promote["steps"][0]["with"]["ref"] == "${{ env.RELEASE_SHA }}"
+    # A dispatch run has the branch, not the tag, in GITHUB_SHA and GITHUB_REF_NAME.
+    text = json.dumps(promote)
+    assert "GITHUB_SHA" not in text and "GITHUB_REF_NAME" not in text
+    assert text.count("github.ref_name") == 1 and text.count("github.sha") == 1
+
+
+def test_gitops_runs_after_promote_also_when_the_tag_job_is_skipped():
+    # GitHub skips each job after a skipped job, unless the job has a condition of its own.
+    gitops = workflow("release.yaml")["jobs"]["gitops"]
+
+    assert gitops["needs"] == "promote"
+    assert gitops["if"] == "${{ !cancelled() && needs.promote.result == 'success' }}"
