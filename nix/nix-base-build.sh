@@ -64,10 +64,16 @@ use_token() {
   export GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; printf "password=%s\n" "$(cat "$NIX_BASE_TOKEN_FILE")"; }; f'
 }
 
+# In the Job, the work directory is a volume mount on a read-only root. Remove its content,
+# not the directory.
+empty_work() {
+  mkdir -p "$work"
+  find "$work" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+}
+
 clone() {
   use_token
-  rm -rf "$work"
-  mkdir -p "$work"
+  empty_work
   for repo in $repos; do
     echo "nix-base-build: clone $repo"
     git clone --quiet --depth 1 "$git_url/$repo.git" "$work/$(basename "$repo")"
@@ -80,7 +86,7 @@ warm() {
     (cd "$work/$(basename "$repo")" && "$devenv" shell -- true)
   done
   # The clones are not part of the Nix base. The evaluation cache and the store are.
-  rm -rf "$work"
+  empty_work
   sync
 }
 

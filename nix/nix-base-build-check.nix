@@ -100,16 +100,21 @@ pkgs.runCommand "nix-base-build-check"
     chmod +x devenv-stub
     export STUB_LOG=$TMPDIR/devenv.log STUB_FAIL=
     export NIX_BASE_DEVENV=$TMPDIR/devenv-stub NIX_BASE_GIT_URL=file://$PWD/git
-    export NIX_BASE_WORK=$TMPDIR/work NIX_BASE_TOKEN_FILE=$TMPDIR/no-token
+    # In the Job, the work directory is a volume mount on a read-only root, so the builder
+    # can empty it but cannot remove it. A read-only parent does the same here.
+    mkdir -p "$TMPDIR/mnt/work/old-clone"
+    chmod 555 "$TMPDIR/mnt"
+    export NIX_BASE_WORK=$TMPDIR/mnt/work NIX_BASE_TOKEN_FILE=$TMPDIR/no-token
     export NIX_BASE_REPOS="owner/home-ops owner/hermes-k8s"
-    NIX_BASE_TARGET=$vol $build clone 2>/dev/null
+    NIX_BASE_TARGET=$vol $build clone || fail "clone: the work directory is a mount point"
+    [ ! -e "$NIX_BASE_WORK/old-clone" ] || fail "clone: an old clone stayed"
     [ -e "$NIX_BASE_WORK/home-ops/devenv.nix" ] && [ -e "$NIX_BASE_WORK/hermes-k8s/devenv.nix" ] \
       || fail "clone: a repository is missing"
     [ ! -e "$STUB_LOG" ] || fail "clone ran devenv"
     NIX_BASE_TARGET=$vol $build warm 2>/dev/null
     [ "$(cat "$STUB_LOG")" = "$(printf '%s\n' 'home-ops shell -- true' 'hermes-k8s shell -- true')" ] \
       || fail "devenv shell ran wrong: $(cat "$STUB_LOG")"
-    [ ! -e "$NIX_BASE_WORK" ] || fail "the clones stayed"
+    [ -d "$NIX_BASE_WORK" ] && [ -z "$(ls -A "$NIX_BASE_WORK")" ] || fail "the clones stayed"
 
     # 5. With a token file, git gets a helper that gives the token, and the token is not in an
     # argument. The warm step, which runs the code of the repositories, has no token.
