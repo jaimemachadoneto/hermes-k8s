@@ -92,6 +92,97 @@ def test_set_image_refs_fails_when_the_file_has_no_hermes_image(tmp_path):
     assert result.returncode != 0
 
 
+def set_nix_base(tmp_path, sandbox_ref, text=None):
+    helm = tmp_path / "helmrelease.yaml"
+    helm.write_text((FIXTURES / "helmrelease-excerpt.yaml").read_text())
+    nix_base = tmp_path / "nix-base.yaml"
+    nix_base.write_text((FIXTURES / "nix-base-excerpt.yaml").read_text() if text is None else text)
+    result = run(
+        [
+            sys.executable,
+            "-I",
+            str(ROOT / "scripts" / "set-image-refs.py"),
+            str(helm),
+            "--hermes-tag",
+            f"sha-abc@{OTHER}",
+            "--sandbox-ref",
+            sandbox_ref,
+            "--nix-base-file",
+            str(nix_base),
+        ]
+    )
+    return result, helm, nix_base
+
+
+def test_set_image_refs_pins_the_three_sandbox_containers_of_the_nix_base(tmp_path):
+    result, _, nix_base = set_nix_base(tmp_path, SANDBOX)
+
+    assert result.returncode == 0, result.stderr
+    before = (FIXTURES / "nix-base-excerpt.yaml").read_text().splitlines()
+    after = nix_base.read_text().splitlines()
+    changed = [a for b, a in zip(before, after, strict=True) if b != a]
+    assert len(before) == len(after)
+    assert changed == [f"              image: {SANDBOX}"] * 3
+    assert "d4a029274fa133e91f94fc56d20428c71c701285" not in nix_base.read_text()
+
+
+def test_set_image_refs_keeps_the_snapshot_image_of_the_nix_base(tmp_path):
+    result, _, nix_base = set_nix_base(tmp_path, SANDBOX)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = "image: alpine/k8s:1.37.2@sha256:7a82aeefea3d554a43a8676b137f2b88bae6c1fe11c13862b191b3a086cc28c0"
+    assert snapshot in nix_base.read_text()
+
+
+def test_set_image_refs_gives_the_helmrelease_and_the_nix_base_the_same_reference(tmp_path):
+    result, helm, nix_base = set_nix_base(tmp_path, SANDBOX)
+
+    assert result.returncode == 0, result.stderr
+    assert f"HERMES_K8S_SANDBOX_IMAGE: {SANDBOX}" in helm.read_text()
+
+
+def test_set_image_refs_replaces_a_sandbox_line_with_no_digest_and_keeps_its_comment(tmp_path):
+    old = "- image: ghcr.io/jaimemachadoneto/hermes-sandbox:latest # old\n"
+    result, _, nix_base = set_nix_base(tmp_path, SANDBOX, text=old)
+
+    assert result.returncode == 0, result.stderr
+    assert nix_base.read_text() == f"- image: {SANDBOX} # old\n"
+
+
+def test_set_image_refs_pins_a_nix_base_image_that_has_no_tag(tmp_path):
+    old = "- image: ghcr.io/jaimemachadoneto/hermes-sandbox@sha256:" + "7" * 64 + "\n"
+    result, _, nix_base = set_nix_base(tmp_path, SANDBOX, text=old)
+
+    assert result.returncode == 0, result.stderr
+    assert nix_base.read_text() == f"- image: {SANDBOX}\n"
+
+
+def test_set_image_refs_fails_when_a_sandbox_line_is_in_a_form_that_it_cannot_replace(tmp_path):
+    text = (FIXTURES / "nix-base-excerpt.yaml").read_text()
+    text += (
+        '            - image: "ghcr.io/jaimemachadoneto/hermes-sandbox:sha-1@sha256:'
+        + "7" * 64
+        + '"\n'
+    )
+    result, helm, nix_base = set_nix_base(tmp_path, SANDBOX, text=text)
+
+    assert result.returncode != 0
+    assert "not replaced" in result.stderr
+    assert nix_base.read_text() == text
+    assert helm.read_text() == (FIXTURES / "helmrelease-excerpt.yaml").read_text()
+
+
+def test_set_image_refs_fails_when_the_nix_base_has_no_sandbox_image(tmp_path):
+    only_alpine = "image: alpine/k8s:1.37.2@sha256:" + "7" * 64 + "\n"
+    result, helm, nix_base = set_nix_base(tmp_path, SANDBOX, text=only_alpine)
+
+    assert result.returncode != 0
+    assert "sandbox image" in result.stderr
+    assert nix_base.read_text() == only_alpine
+    # The script changes no file when one file fails. The PR therefore never has only a part of the change.
+    assert helm.read_text() == (FIXTURES / "helmrelease-excerpt.yaml").read_text()
+
+
 def test_the_sandbox_reference_of_the_script_matches_the_vap_pattern(tmp_path):
     result, target = set_refs(tmp_path, f"sha-abc@{OTHER}", SANDBOX)
 
@@ -268,6 +359,8 @@ def test_release_jobs_run_on_hosted_runners_with_least_privilege():
 def test_release_does_not_build_or_install_nix():
     text = (ROOT / ".github" / "workflows" / "release.yaml").read_text()
 
+    # The file name nix-base.yaml and the variable NIX_BASE_FILE are not an install of Nix.
+    text = re.sub(r"nix-base\.yaml|NIX_BASE_FILE", "", text)
     assert not re.search(r"\bnix\b|cachix|determinate", text, re.IGNORECASE)
     assert "trivy" not in text
     assert "publish-image.sh" not in text
@@ -305,6 +398,23 @@ def test_release_opens_the_pull_request_with_the_secret_of_the_other_repositorie
     assert "repository: jaimemachadoneto/home-ops" in text
     assert "kubernetes/apps/ai/hermes/app/helmrelease.yaml" in text
     assert "scripts/set-image-refs.py" in text
+
+
+def test_the_gitops_job_pins_the_nix_base_in_the_same_pull_request():
+    wf = workflow("release.yaml")
+    text = (ROOT / ".github" / "workflows" / "release.yaml").read_text()
+    step = next(s for s in wf["jobs"]["gitops"]["steps"] if "set-image-refs" in s.get("run", ""))
+    pr = next(
+        s for s in wf["jobs"]["gitops"]["steps"] if "create-pull-request" in s.get("uses", "")
+    )
+
+    assert (
+        wf["env"]["NIX_BASE_FILE"]
+        == "kubernetes/apps/hermes-sandbox/sandbox-tenant/app/nix-base.yaml"
+    )
+    assert '--nix-base-file "gitops/$NIX_BASE_FILE"' in step["run"]
+    assert "env.GITOPS_FILE" in pr["with"]["body"]
+    assert "env.NIX_BASE_FILE" in pr["with"]["body"]
 
 
 def test_ci_runs_for_each_pull_request_on_a_hosted_runner():
