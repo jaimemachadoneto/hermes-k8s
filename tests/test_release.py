@@ -354,3 +354,24 @@ def test_each_ignored_finding_has_a_scope_a_reason_and_an_expiry():
             expiry if isinstance(expiry, datetime.date) else datetime.date.fromisoformat(expiry)
         )
         assert expiry - today <= datetime.timedelta(days=90)
+
+
+def test_ci_cancels_only_an_old_run_of_the_same_pull_request():
+    # Each runner has its own clone of the Nix store, so runs do not need one shared lock.
+    wf = workflow("ci.yaml")
+
+    assert wf["concurrency"] == {
+        "group": "ci-${{ github.head_ref || github.run_id }}",
+        "cancel-in-progress": True,
+    }
+
+
+def test_the_runner_smoke_test_has_no_lock():
+    assert "concurrency" not in workflow("nix-runner-smoke.yaml")
+
+
+def test_two_releases_never_run_at_the_same_time():
+    assert workflow("release.yaml")["concurrency"] == {
+        "group": "release",
+        "cancel-in-progress": False,
+    }

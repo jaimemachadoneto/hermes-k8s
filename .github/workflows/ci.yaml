@@ -1,8 +1,7 @@
 name: ci
 
-# This workflow checks each pull request on the runner arc-jmn-nix. The Nix
-# store of the runner keeps its data between runs, so a pull request from a
-# fork never runs here.
+# This workflow checks each pull request on the runner arc-jmn-nix. The runner
+# is in the home cluster, so a pull request from a fork never runs here.
 on:
   pull_request:
   push:
@@ -11,9 +10,11 @@ on:
 permissions:
   contents: read
 
+# Each runner has its own clone of the Nix store, so runs need no shared lock. A new push to a
+# pull request cancels its old run. Each run on main has its own group, so each commit gets a run.
 concurrency:
-  group: arc-jmn-nix
-  cancel-in-progress: false
+  group: ci-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   check:
