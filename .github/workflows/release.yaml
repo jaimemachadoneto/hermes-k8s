@@ -29,7 +29,7 @@ env:
 jobs:
   promote:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read
@@ -48,20 +48,13 @@ jobs:
       - name: The tag is on main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
-      # The images of the tag are the images that this run of CI built, scanned and pushed.
-      # A run of CI on a push is green only when its job `publish` passed.
-      - name: CI on main passed for this commit
+      # The images of the tag are the images that the run of CI on main built, scanned and
+      # pushed. A run on a push is green only when its job `publish` passed. A tag made right
+      # after a merge waits here for that run.
+      - name: Wait for CI on main for this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml \
-            --commit "$GITHUB_SHA" --branch main --event push --status success \
-            --json databaseId --jq 'length')
-          if [ "$runs" -lt 1 ]; then
-            echo "::error::No successful run of ci.yaml on main for commit $GITHUB_SHA. Wait for CI on main to pass. Then run the release again."
-            exit 1
-          fi
+        run: scripts/wait-for-ci.sh "$GITHUB_SHA"
 
       # skopeo is on the hosted runner. The step fails if a new image of the runner does not have it.
       - name: Copy the images to the release tag

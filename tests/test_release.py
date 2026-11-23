@@ -272,26 +272,18 @@ def test_release_does_not_build_or_install_nix():
     assert "publish-image.sh" not in text
 
 
-def test_release_needs_a_green_ci_run_of_the_commit_on_main():
+def test_release_waits_for_the_ci_run_of_the_commit_on_main():
     wf = workflow("release.yaml")
     steps = wf["jobs"]["promote"]["steps"]
-    check = next(s for s in steps if "gh run list" in s.get("run", ""))
-    script = check["run"]
+    wait = next(s for s in steps if "wait-for-ci.sh" in s.get("run", ""))
 
-    for part in (
-        "--workflow ci.yaml",
-        '--commit "$GITHUB_SHA"',
-        "--branch main",
-        "--event push",
-        "--status success",
-    ):
-        assert part in script, part
-    # No green run: the step must fail with a message that says why.
-    assert "exit 1" in script
-    assert "::error::" in script
-    # The check comes before the copy of the images.
+    assert 'scripts/wait-for-ci.sh "$GITHUB_SHA"' in wait["run"]
+    assert wait["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+    # The wait (45 min at most) must fit in the time limit of the job.
+    assert wf["jobs"]["promote"]["timeout-minutes"] >= 60
+    # The wait comes before the copy of the images.
     copy = next(i for i, s in enumerate(steps) if "promote-image.sh" in s.get("run", ""))
-    assert steps.index(check) < copy
+    assert steps.index(wait) < copy
 
 
 def test_release_copies_the_ci_images_with_the_promote_script():
@@ -400,18 +392,12 @@ def test_the_cache_filter_keeps_claude_code_and_the_images_out_of_the_cache():
             assert not pattern.search(pushed), pushed
 
 
-def test_the_runner_frees_disk_before_it_builds_an_image():
+def test_no_job_spends_time_to_free_disk():
+    # A hosted runner had 106 GB free in the first run, and a build needs a few GB.
     for name in ("ci.yaml", "release.yaml"):
         for job_name, job in workflow(name)["jobs"].items():
-            if not any(cachix_steps({"jobs": {job_name: job}})):
-                continue
-            runs = [s.get("run", "") for s in job["steps"]]
-            first = next(i for i, s in enumerate(job["steps"]) if "rm -rf" in runs[i])
-            nix = next(
-                i for i, s in enumerate(job["steps"]) if "install-nix-action" in s.get("uses", "")
-            )
-            assert first < nix, (name, job_name)
-            assert "/usr/share/dotnet" in runs[first]
+            for step in job["steps"]:
+                assert "/usr/share/dotnet" not in step.get("run", ""), (name, job_name)
 
 
 def test_actions_are_pinned_by_commit():
@@ -556,7 +542,7 @@ def test_release_checks_the_branch_and_the_ci_run_before_it_copies():
     steps = workflow("release.yaml")["jobs"]["promote"]["steps"]
     checkout = steps[0]
     branch = next(s for s in steps if "merge-base --is-ancestor" in s.get("run", ""))
-    ci = next(s for s in steps if "gh run list" in s.get("run", ""))
+    ci = next(s for s in steps if "wait-for-ci.sh" in s.get("run", ""))
     copy = next(s for s in steps if "promote-image.sh" in s.get("run", ""))
 
     assert checkout["with"]["fetch-depth"] == 0
@@ -564,7 +550,6 @@ def test_release_checks_the_branch_and_the_ci_run_before_it_copies():
     for step in (branch, ci):
         assert "continue-on-error" not in step
         assert "if" not in step
-    assert '"$runs" -lt 1' in ci["run"]
 
 
 def test_each_attestation_uses_the_digest_of_the_push_step():
