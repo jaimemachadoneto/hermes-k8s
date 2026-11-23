@@ -74,7 +74,7 @@ def test_exec_obeys_the_timeout_of_a_command_that_closes_its_output(cluster):
     try:
         assert result.exit_code == 124
         assert time.monotonic() - started < 10
-        # Like a real pod, the fake leaves the process to a second exec.
+        # The fake does not stop the process, as in a real pod. Only a second exec stops it.
         os.kill(pid, 0)
     finally:
         os.kill(pid, signal.SIGKILL)

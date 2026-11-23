@@ -95,3 +95,56 @@ def test_the_configured_image_wins_over_the_image_that_hermes_passes(cluster):
 
     (sandbox,) = cluster.sandboxes.values()
     assert sandbox.image == IMAGE
+
+
+def test_a_command_that_ends_normally_sends_no_stop_exec(make_env, cluster):
+    env = make_env()
+    cluster.exec_log.clear()
+
+    env.execute("true")
+    env.execute("exit 3")
+
+    assert len(cluster.exec_log) == 2
+
+
+def test_a_timeout_sends_one_stop_exec(make_env, cluster):
+    env = make_env()
+    cluster.exec_log.clear()
+
+    env.execute("sleep 30", timeout=1)
+
+    assert len(cluster.exec_log) == 2
+
+
+def test_a_command_that_exits_124_by_itself_keeps_its_exit_code_and_kills_nothing(make_env):
+    env = make_env()
+    env.execute("sleep 300 & echo $! > child.pid", timeout=30)
+    try:
+        result = env.execute("exit 124")
+
+        assert result["returncode"] == 124
+        alive = env.execute('p=$(cat child.pid); [ -d "/proc/$p" ] && echo alive; true')
+        assert alive["output"].strip() == "alive"
+    finally:
+        env.execute("kill $(cat child.pid) 2>/dev/null; true")
+
+
+def test_a_failed_stop_exec_keeps_the_timeout_exit_code(make_env, cluster):
+    from k8s_sandbox.cluster import ClusterError
+
+    env = make_env()
+    real = cluster.exec
+
+    def exec_then_fail(name, argv, **kwargs):
+        if "k8s-stop" in argv:
+            raise ClusterError("boom")
+        return real(name, argv, **kwargs)
+
+    cluster.exec = exec_then_fail
+    try:
+        result = env.execute("echo start; sleep 30", timeout=1)
+    finally:
+        cluster.exec = real
+
+    assert result["returncode"] == 124
+    assert "start" in result["output"]

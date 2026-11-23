@@ -22,12 +22,13 @@ _TIMEOUT_EXIT_CODE = 124
 _CANCEL_EXIT_CODE = 130
 STOP_TIMEOUT_SECONDS = 30
 
-# The command runs as a job of a shell with job control. The job is a process group of its own,
-# and its group id is in a file under a directory that only this command uses. The shell removes
-# the directory when the job ends. Arguments: the id of the command, "1" for a login shell, and
-# the command text.
+# The command runs as a job of a shell with job control. The job is a process group of its own.
+# Its group id is in a file. The file is in a directory that only this command uses. The shell
+# removes the directory when the job ends. Arguments: the id of the command, "1" for a login
+# shell or "0" for another shell, and the command text.
 RUN_SCRIPT = """\
 set -m
+umask 077
 d=/tmp/hermes-k8s/$1
 mkdir -p "$d"
 if [ "$2" = 1 ]; then bash -l -c "$3" & else bash -c "$3" & fi
@@ -43,13 +44,20 @@ exit "$rc"
 # the group, waits up to 2 seconds, and then sends KILL. Argument: the id of the command.
 STOP_SCRIPT = """\
 d=/tmp/hermes-k8s/$1
+[ -d "$d" ] || exit 0
+# The run script writes the file a moment after the job starts. Wait for it.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -s "$d/pgid" ] && break
+  sleep 0.1
+done
 read -r pgid < "$d/pgid" 2>/dev/null || exit 0
+case $pgid in ''|*[!0-9]*|0|1) exit 0 ;; esac
 kill -TERM -- "-$pgid" 2>/dev/null
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   kill -0 -- "-$pgid" 2>/dev/null || break
   sleep 0.1
 done
-kill -KILL -- "-$pgid" 2>/dev/null
+kill -0 -- "-$pgid" 2>/dev/null && kill -KILL -- "-$pgid" 2>/dev/null
 rm -rf "$d"
 """
 
@@ -158,7 +166,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
     def _stop_command(self, command_id: str) -> None:
         """Stop the command in the sandbox after a timeout or a cancel.
 
-        The exec request ends on the client side, but the remote command goes on. A second
+        The exec request ends on the client side, but the remote command continues. A second
         exec stops its process group. Exit code 124 can also come from the command itself:
         the stop then finds no directory and does nothing. The caller keeps its exit code.
         """

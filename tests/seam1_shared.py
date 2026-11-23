@@ -63,7 +63,7 @@ def test_an_interrupt_stops_a_running_command_with_exit_code_130(make_env):
 # Shell text that runs a parent and a child, saves their PIDs, and waits.
 _PARENT_AND_CHILD = "sleep 300 & echo $! > child.pid; echo $$ > parent.pid; wait"
 _ALIVE = (
-    'for f in parent.pid child.pid; do p=$(cat "$f"); '
+    'for f in parent.pid child.pid; do p=$(cat "$f"); [ -n "$p" ] || continue; '
     '[ -d "/proc/$p" ] && ! grep -q "^State:.Z" "/proc/$p/status" && echo "$f alive"; done; true'
 )
 
@@ -146,6 +146,17 @@ def test_a_background_job_of_a_command_that_ended_is_not_stopped(make_env):
         assert "child.pid alive" in _alive(env)
     finally:
         _stop_leftovers(env)
+
+
+def test_a_command_that_ends_keeps_its_exit_code_and_removes_its_directory(make_env):
+    env = make_env()
+
+    result = env.execute('grep -l "^$$\\$" /tmp/hermes-k8s/*/pgid > seen.txt; exit 7')
+
+    assert result["returncode"] == 7
+    seen = env.execute("cat seen.txt")["output"].split()
+    assert len(seen) == 1
+    assert env.execute(f"test -e {seen[0]} || echo gone")["output"].strip() == "gone"
 
 
 def test_the_stop_keeps_the_directory_and_the_exports_of_later_commands(make_env):

@@ -228,8 +228,8 @@ def _collect(proc: subprocess.Popen, timeout: float, cancel: CancelToken) -> Exe
                     break
                 chunks.append(chunk)
             return ExecResult(_decode(chunks), proc.returncode)
-        # The real client closes the stream and leaves the remote process alone. So does this
-        # fake: only a second exec can stop the command.
+        # The real client closes the stream and leaves the remote process alone. This fake does
+        # the same. Only a second exec can stop the command.
         if cancel.cancelled:
             return ExecResult(_decode(chunks), 130)
         if time.monotonic() >= deadline:
