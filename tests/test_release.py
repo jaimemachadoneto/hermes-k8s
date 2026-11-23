@@ -252,14 +252,14 @@ def test_release_runs_on_a_version_tag_only():
     assert wf["on"] == {"push": {"tags": ["v[0-9]+.[0-9]+.[0-9]+"]}}
 
 
-def test_release_jobs_run_on_the_nix_runner_with_least_privilege():
+def test_release_jobs_run_on_hosted_runners_with_least_privilege():
     wf = workflow("release.yaml")
 
     assert wf["permissions"] == {"contents": "read"}
     publish_job = wf["jobs"]["publish"]
-    assert publish_job["runs-on"] == "arc-jmn-nix"
+    assert publish_job["runs-on"] == "ubuntu-latest"
     assert publish_job["permissions"] == {"contents": "read", "packages": "write"}
-    assert wf["jobs"]["gitops"]["runs-on"] == "arc-jmn-nix"
+    assert wf["jobs"]["gitops"]["runs-on"] == "ubuntu-latest"
     assert wf["jobs"]["gitops"]["needs"] == "publish"
 
 
@@ -284,16 +284,108 @@ def test_release_opens_the_pull_request_with_the_secret_of_the_other_repositorie
     assert "scripts/set-image-refs.py" in text
 
 
-def test_ci_runs_for_pull_requests_of_this_repository_only():
+def test_ci_runs_for_each_pull_request_on_a_hosted_runner():
     wf = workflow("ci.yaml")
 
     job = wf["jobs"]["check"]
     assert "pull_request" in wf["on"]
-    assert job["runs-on"] == "arc-jmn-nix"
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in job["if"]
+    assert "pull_request_target" not in wf["on"]
+    assert job["runs-on"] == "ubuntu-latest"
+    # A fork pull request runs after the approval that the repository setting requires.
+    assert "if" not in job
     text = (ROOT / ".github" / "workflows" / "ci.yaml").read_text()
     assert "nix flake check" in text
     assert "pytest" in text
+
+
+def test_no_job_runs_on_the_self_hosted_runner():
+    for path in (ROOT / ".github" / "workflows").glob("*.yaml"):
+        for name, job in workflow(path.name)["jobs"].items():
+            assert job["runs-on"] == "ubuntu-latest", (path.name, name)
+    for path in (ROOT / ".github").rglob("*"):
+        if path.is_file() and path.suffix in (".yaml", ".yml", ".nix"):
+            assert "arc-jmn-nix" not in path.read_text(), path
+
+
+def cachix_steps(wf):
+    return [
+        (name, step)
+        for name, job in wf["jobs"].items()
+        for step in job["steps"]
+        if step.get("uses", "").startswith("cachix/cachix-action@")
+    ]
+
+
+def test_each_build_job_reads_the_public_cache_and_never_pushes_for_a_pull_request():
+    for name in ("ci.yaml", "release.yaml"):
+        steps = cachix_steps(workflow(name))
+        assert steps, name
+        for _, step in steps:
+            assert step["with"]["name"] == "hermes-k8s"
+            assert step["with"]["authToken"] == "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+
+def test_the_cache_push_is_skipped_only_for_the_pull_request_event():
+    wf = workflow("ci.yaml")
+    ((_, step),) = cachix_steps(wf)
+    expr = step["with"]["skipPush"]
+
+    assert expr == "${{ github.event_name == 'pull_request' }}"
+    assert "pull_request" in wf["on"]
+    assert wf["on"]["push"] == {"branches": ["main"]}
+    release = workflow("release.yaml")
+    for _, release_step in cachix_steps(release):
+        assert release_step["with"]["skipPush"] == "${{ github.event_name == 'pull_request' }}"
+    assert "pull_request" not in release["on"]
+
+
+def test_the_cache_filter_keeps_claude_code_and_the_images_out_of_the_cache():
+    steps = cachix_steps(workflow("ci.yaml")) + cachix_steps(workflow("release.yaml"))
+    assert steps
+    for _, step in steps:
+        pattern = re.compile(step["with"]["pushFilter"])
+        h = "a" * 32
+        for skipped in (
+            f"/nix/store/{h}-claude-code-2.1.138",
+            f"/nix/store/{h}-claude-code-2.1.138-npm-deps",
+            f"/nix/store/{h}-hermes.tar.gz",
+            f"/nix/store/{h}-hermes-sandbox.tar.gz",
+            f"/nix/store/{h}-claude.zst",
+            f"/nix/store/{h}-stream-hermes",
+            f"/nix/store/{h}-hermes-customisation-layer",
+            f"/nix/store/{h}-hermes-conf.json",
+            f"/nix/store/{h}-layers.json",
+            f"/nix/store/{h}-excludePaths",
+            f"/nix/store/{h}-stream-ghcr.io-jaimemachadoneto-hermes",
+            f"/nix/store/{h}-stream-ghcr.io-jaimemachadoneto-hermes-sandbox",
+            f"/nix/store/{h}-ghcr.io-jaimemachadoneto-hermes-customisation-layer",
+            f"/nix/store/{h}-ghcr.io-jaimemachadoneto-hermes-sandbox-customisation-layer",
+            f"/nix/store/{h}-ghcr.io-jaimemachadoneto-hermes-layers.json",
+            f"/nix/store/{h}-ghcr.io-jaimemachadoneto-hermes-sandbox-conf.json",
+        ):
+            assert pattern.search(skipped), skipped
+        for pushed in (
+            f"/nix/store/{h}-python3-3.14.10-env",
+            f"/nix/store/{h}-upstream-tools-1.0",
+            f"/nix/store/{h}-glibc-2.42",
+            f"/nix/store/{h}-libstream-1.0",
+            f"/nix/store/{h}-foo-layers.json-bar",
+        ):
+            assert not pattern.search(pushed), pushed
+
+
+def test_the_runner_frees_disk_before_it_builds_an_image():
+    for name in ("ci.yaml", "release.yaml"):
+        for job_name, job in workflow(name)["jobs"].items():
+            if not any(cachix_steps({"jobs": {job_name: job}})):
+                continue
+            runs = [s.get("run", "") for s in job["steps"]]
+            first = next(i for i, s in enumerate(job["steps"]) if "rm -rf" in runs[i])
+            nix = next(
+                i for i, s in enumerate(job["steps"]) if "install-nix-action" in s.get("uses", "")
+            )
+            assert first < nix, (name, job_name)
+            assert "/usr/share/dotnet" in runs[first]
 
 
 def test_actions_are_pinned_by_commit():
@@ -361,13 +453,9 @@ def test_ci_cancels_only_an_old_run_of_the_same_pull_request():
     wf = workflow("ci.yaml")
 
     assert wf["concurrency"] == {
-        "group": "ci-${{ github.head_ref || github.run_id }}",
+        "group": "ci-${{ github.event.pull_request.number || github.run_id }}",
         "cancel-in-progress": True,
     }
-
-
-def test_the_runner_smoke_test_has_no_lock():
-    assert "concurrency" not in workflow("nix-runner-smoke.yaml")
 
 
 def test_two_releases_never_run_at_the_same_time():

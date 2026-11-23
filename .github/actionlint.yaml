@@ -1,4 +1,0 @@
-self-hosted-runner:
-  # The runner scale sets of the home cluster (home-ops).
-  labels:
-    - arc-jmn-nix
