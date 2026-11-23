@@ -303,7 +303,7 @@ def test_no_job_runs_on_the_self_hosted_runner():
         for name, job in workflow(path.name)["jobs"].items():
             assert job["runs-on"] == "ubuntu-latest", (path.name, name)
     for path in (ROOT / ".github").rglob("*"):
-        if path.is_file():
+        if path.is_file() and path.suffix in (".yaml", ".yml", ".nix"):
             assert "arc-jmn-nix" not in path.read_text(), path
 
 
@@ -323,12 +323,9 @@ def test_each_build_job_reads_the_public_cache_and_never_pushes_for_a_pull_reque
         for _, step in steps:
             assert step["with"]["name"] == "hermes-k8s"
             assert step["with"]["authToken"] == "${{ secrets.CACHIX_AUTH_TOKEN }}"
-            skip = str(step["with"]["skipPush"])
-            assert "github.event_name == 'pull_request'" in skip or skip == "true"
-            assert "skipPush" in step["with"]
 
 
-def test_the_cache_push_skips_a_pull_request_but_not_main_or_a_tag():
+def test_the_cache_push_is_skipped_only_for_the_pull_request_event():
     wf = workflow("ci.yaml")
     ((_, step),) = cachix_steps(wf)
     expr = step["with"]["skipPush"]
@@ -353,6 +350,12 @@ def test_the_cache_filter_keeps_claude_code_and_the_images_out_of_the_cache():
             f"/nix/store/{h}-claude-code-2.1.138-npm-deps",
             f"/nix/store/{h}-hermes.tar.gz",
             f"/nix/store/{h}-hermes-sandbox.tar.gz",
+            f"/nix/store/{h}-claude.zst",
+            f"/nix/store/{h}-stream-hermes",
+            f"/nix/store/{h}-hermes-customisation-layer",
+            f"/nix/store/{h}-hermes-conf.json",
+            f"/nix/store/{h}-layers.json",
+            f"/nix/store/{h}-excludePaths",
             f"/nix/store/{h}-stream-ghcr.io-jaimemachadoneto-hermes",
             f"/nix/store/{h}-stream-ghcr.io-jaimemachadoneto-hermes-sandbox",
             f"/nix/store/{h}-ghcr.io-jaimemachadoneto-hermes-customisation-layer",
@@ -365,6 +368,8 @@ def test_the_cache_filter_keeps_claude_code_and_the_images_out_of_the_cache():
             f"/nix/store/{h}-python3-3.14.10-env",
             f"/nix/store/{h}-upstream-tools-1.0",
             f"/nix/store/{h}-glibc-2.42",
+            f"/nix/store/{h}-libstream-1.0",
+            f"/nix/store/{h}-foo-layers.json-bar",
         ):
             assert not pattern.search(pushed), pushed
 

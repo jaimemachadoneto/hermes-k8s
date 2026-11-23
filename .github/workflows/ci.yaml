@@ -1,9 +1,9 @@
 name: ci
 
 # This workflow checks each pull request on a GitHub-hosted runner. A pull request
-# from a fork runs after the approval that the repository setting "Require approval
-# for all external contributors" asks for. The trigger is pull_request, so a fork gets
-# no secret and a read-only token.
+# from a fork runs only after approval. The repository setting "Require approval for
+# all external contributors" gives this approval. The trigger is pull_request, so a
+# fork gets no secret and gets a read-only token.
 on:
   pull_request:
   push:
@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      # A hosted runner has about 14 GB free, and the build of the images needs much of it.
+      # A hosted runner has little free disk space. The build of the images needs much of it.
       # Remove the toolchains that this job does not use.
       - name: Free disk space
         run: |
@@ -38,15 +38,16 @@ jobs:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
 
-      # The cache is public. A pull request only reads it. claude-code is unfree and its
-      # license does not allow redistribution, and each image contains it, so the filter
-      # keeps claude-code and the image paths out of the cache.
+      # The cache is public. A pull request only reads it.
+      # The license of claude-code does not allow redistribution. Each image contains
+      # claude-code. The filter keeps claude-code, its download and the image paths out of
+      # the cache.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: hermes-k8s
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipPush: ${{ github.event_name == 'pull_request' }}
-          pushFilter: '(claude-code|hermes(-sandbox)?\.tar\.gz$|-stream-|customisation-layer|-layers\.json$|-conf\.json$)'
+          pushFilter: '(claude-code|hermes(-sandbox)?\.tar\.gz$|-stream-|customisation-layer|-layers\.json$|-conf\.json$|-excludePaths$|-claude\.zst$)'
 
       - name: Flake check
         run: nix flake check
