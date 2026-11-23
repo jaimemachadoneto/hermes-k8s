@@ -4,6 +4,10 @@ name: ci
 # from a fork runs only after approval. The repository setting "Require approval for
 # all external contributors" gives this approval. The trigger is pull_request, so a
 # fork gets no secret and gets a read-only token.
+#
+# A push to main also scans both images and pushes them to ghcr.io as sha-<commit>, with a
+# build provenance attestation. The release of a tag promotes these images and builds nothing.
+# The job `publish` never runs for a pull request, and only this job can write packages.
 on:
   pull_request:
   push:
@@ -18,6 +22,10 @@ permissions:
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
+
+env:
+  HERMES_IMAGE: ghcr.io/jaimemachadoneto/hermes
+  SANDBOX_IMAGE: ghcr.io/jaimemachadoneto/hermes-sandbox
 
 jobs:
   check:
@@ -56,3 +64,98 @@ jobs:
       # The tests need Python 3.14 and the Hermes package. uv installs both.
       - name: Tests
         run: nix shell --inputs-from . nixpkgs#uv nixpkgs#git -c uv run pytest
+
+  # The images are on ghcr.io only after the checks, the tests and the scan pass. A hosted
+  # job has no disk that the next job can read, so this job builds the images again. The
+  # Nix cache gives the dependencies. The images stay out of the cache.
+  publish:
+    needs: check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # A hosted runner has little free disk space. The build of the images needs much of it.
+      # Remove the toolchains that this job does not use.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      # Same cache and same filter as the job `check`.
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: hermes-k8s
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ github.event_name == 'pull_request' }}
+          pushFilter: '(claude-code|hermes(-sandbox)?\.tar\.gz$|-stream-|customisation-layer|-layers\.json$|-conf\.json$|-excludePaths$|-claude\.zst$)'
+
+      # Scan the images before the push. A failed scan keeps the image off the registry.
+      # The scan looks at the tarball, so it needs no registry and no daemon.
+      # .trivyignore.yaml holds the accepted findings, each with a reason and an expiry.
+      # Scan each image before the step fails, so one run shows all the findings.
+      - name: Scan the images
+        run: |
+          set -euo pipefail
+          failed=0
+          for attr in sandbox-image hermes-image; do
+            out=$(nix build ".#$attr" --no-link --print-out-paths)
+            nix shell --inputs-from . nixpkgs#trivy -c trivy image \
+              --input "$out" --severity HIGH,CRITICAL --ignore-unfixed \
+              --ignorefile .trivyignore.yaml --exit-code 1 || failed=1
+          done
+          exit "$failed"
+
+      - name: Push the images
+        id: push
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          push() {
+            nix shell --inputs-from . nixpkgs#skopeo -c \
+              scripts/publish-image.sh "$1" "$2" "sha-$COMMIT"
+          }
+          sandbox_ref=$(push sandbox-image "$SANDBOX_IMAGE")
+          hermes_ref=$(push hermes-image "$HERMES_IMAGE")
+          {
+            echo "sandbox-digest=${sandbox_ref#*@}"
+            echo "hermes-digest=${hermes_ref#*@}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Images"
+            echo "- \`$sandbox_ref\`"
+            echo "- \`$hermes_ref\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The attestation goes to ghcr.io next to the image. It names the workflow and the commit
+      # that built the digest.
+      - name: Attest the sandbox image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.SANDBOX_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.sandbox-digest }}
+          push-to-registry: true
+
+      - name: Attest the Hermes image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.HERMES_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.hermes-digest }}
+          push-to-registry: true
