@@ -9,6 +9,7 @@ the volume is `data-<sandbox name>`.
 from __future__ import annotations
 
 import os
+import select
 import signal
 import subprocess
 import threading
@@ -30,6 +31,7 @@ from .cluster import (
 from .sandbox_spec import DEFAULT_PROFILE, SECRET_PATH, SECRET_VOLUME, VOLUME, build_sandbox
 
 _POLL_SECONDS = 0.02
+_READ_BYTES = 65536
 _TEMPLATE = VOLUME
 
 
@@ -166,20 +168,13 @@ class FakeCluster:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        deadline = time.monotonic() + timeout
-        pending_input = stdin
-        chunks: list[bytes] = []
-        while True:
-            try:
-                out, _ = proc.communicate(input=pending_input, timeout=_POLL_SECONDS)
-                chunks.append(out or b"")
-                return ExecResult(_decode(chunks), proc.returncode)
-            except subprocess.TimeoutExpired:
-                pending_input = None  # communicate() keeps the input it already took
-            if cancel.cancelled:
-                return ExecResult(_decode(chunks) + _kill(proc), 130)
-            if time.monotonic() >= deadline:
-                return ExecResult(_decode(chunks) + _kill(proc), 124)
+        if stdin is not None:
+            threading.Thread(target=_feed, args=(proc, stdin), daemon=True).start()
+        try:
+            return _collect(proc, timeout, cancel)
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
 
     def set_operating_mode(self, name: str, mode: str) -> None:
         sandbox = self.sandboxes.get(name)
@@ -206,6 +201,52 @@ class FakeCluster:
 
     def delete_nix_base(self, name: str) -> None:
         self.nix_bases = [b for b in self.nix_bases if b.name != name]
+
+
+def _collect(proc: subprocess.Popen, timeout: float, cancel: CancelToken) -> ExecResult:
+    """Read the output until the command exits, or until the timeout or a cancel."""
+    deadline = time.monotonic() + timeout
+    chunks: list[bytes] = []
+    assert proc.stdout is not None
+    fd = proc.stdout.fileno()
+    at_end = False
+    while True:
+        if not at_end and select.select([fd], [], [], _POLL_SECONDS)[0]:
+            chunk = os.read(fd, _READ_BYTES)
+            if chunk:
+                chunks.append(chunk)
+                continue
+            at_end = True
+        elif at_end:
+            time.sleep(_POLL_SECONDS)
+        # A real exec call ends when the command exits. A background job can hold the pipe
+        # open, so do not wait for the end of the output. Read what the command wrote
+        # before it exited.
+        if proc.poll() is not None:
+            while not at_end and select.select([fd], [], [], 0)[0]:
+                chunk = os.read(fd, _READ_BYTES)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return ExecResult(_decode(chunks), proc.returncode)
+        if cancel.cancelled:
+            return ExecResult(_decode(chunks) + _kill(proc), 130)
+        if time.monotonic() >= deadline:
+            return ExecResult(_decode(chunks) + _kill(proc), 124)
+
+
+def _feed(proc: subprocess.Popen, data: bytes) -> None:
+    """Write the input in a thread, so a large input cannot block the read of the output."""
+    assert proc.stdin is not None
+    try:
+        proc.stdin.write(data)
+    except BrokenPipeError:
+        pass  # The command exited and did not read all of its input.
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError, ValueError:
+            pass
 
 
 def _kill(proc: subprocess.Popen) -> str:
