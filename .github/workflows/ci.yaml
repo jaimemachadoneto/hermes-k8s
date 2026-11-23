@@ -12,10 +12,11 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request cancels its old run. Each run on main has its own group,
-# so each commit gets a run.
+# A new push to a pull request cancels its old run. The key is the number of the pull
+# request, so two forks with the same branch name do not share it. Each run on main has its
+# own group, so each commit gets a run.
 concurrency:
-  group: ci-${{ github.head_ref || github.run_id }}
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:

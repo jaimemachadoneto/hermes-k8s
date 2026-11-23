@@ -453,7 +453,7 @@ def test_ci_cancels_only_an_old_run_of_the_same_pull_request():
     wf = workflow("ci.yaml")
 
     assert wf["concurrency"] == {
-        "group": "ci-${{ github.head_ref || github.run_id }}",
+        "group": "ci-${{ github.event.pull_request.number || github.run_id }}",
         "cancel-in-progress": True,
     }
 
