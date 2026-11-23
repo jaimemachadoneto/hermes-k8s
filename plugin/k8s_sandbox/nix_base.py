@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections import defaultdict
 
 from .cluster import Cluster, ClusterError, NixBase
 
@@ -27,9 +26,9 @@ LABEL_DIGEST = "hermes-k8s/image-digest"
 _DIGEST_LENGTH = 32
 _DIGEST = re.compile(r"@sha256:([a-f0-9]{64})$")
 
-# Each image keeps its two newest Nix bases: the newest one serves new sandboxes, and the
-# second one covers a sandbox that starts while a new Nix base is in the making.
-KEEP_PER_IMAGE = 2
+# The plugin keeps the two newest Nix bases of the current image. The newest Nix base serves new
+# sandboxes. The second Nix base covers a sandbox that starts while a new Nix base is in the making.
+KEEP_CURRENT = 2
 # A Nix base that is not ready after this time did not finish. Its Job failed.
 NOT_READY_SECONDS = 24 * 3600.0
 # A Nix base is deleted only after this time: a new sandbox can still clone it from a list that
@@ -67,20 +66,23 @@ def nix_bases_to_delete(
 ) -> list[str]:
     """Return the names of the Nix bases that the cluster does not need any more.
 
-    Keep the two newest ready Nix bases of each image, every Nix base that is less than an hour
-    old, and a Nix base that is in the making. The newest ready Nix bases of the current image
-    are always among the ones to keep.
+    Keep these Nix bases: the two newest ready Nix bases of the current image, each Nix base that
+    is less than an hour old, and each Nix base that is less than a day old and not ready.
+    If the current image has a ready Nix base, delete each ready Nix base of the other images.
+    They use quota that the sandbox archives need. If the current image has no ready Nix base,
+    keep the Nix bases of the other images. A new sandbox can use an old Nix base while the new
+    Nix base is in the making. Do not delete a Nix base that has no digest label.
     """
     now = time.time() if now is None else now
-    by_image: dict[str, list[NixBase]] = defaultdict(list)
-    for base in bases:
-        by_image[base.image_digest].append(base)
+    current = image_digest_label(current_image)
+    old_enough = [b for b in bases if b.image_digest and now - b.created > GRACE_SECONDS]
+    ready = _newest_first([b for b in bases if b.ready and b.image_digest == current])
     doomed: list[str] = []
-    for group in by_image.values():
-        ready = _newest_first([b for b in group if b.ready])
-        # A sandbox that chose an older Nix base needs it until its volume exists.
-        doomed += [b.name for b in ready[KEEP_PER_IMAGE:] if now - b.created > GRACE_SECONDS]
-        doomed += [b.name for b in group if not b.ready and now - b.created > NOT_READY_SECONDS]
+    if ready:
+        doomed += [b.name for b in old_enough if b.ready and b.image_digest != current]
+    # A sandbox that chose an older Nix base needs it until its volume exists.
+    doomed += [b.name for b in ready[KEEP_CURRENT:] if now - b.created > GRACE_SECONDS]
+    doomed += [b.name for b in old_enough if not b.ready and now - b.created > NOT_READY_SECONDS]
     return doomed
 
 

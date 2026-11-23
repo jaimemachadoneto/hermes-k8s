@@ -10,8 +10,12 @@ VolumeSnapshot (class `csi-ceph-blockpool`) with the labels `hermes-k8s/kind=nix
 `hermes-k8s/image-digest=<first 32 characters of the digest>`. It then deletes the volume to
 free the quota. The plugin selects the newest ready Nix base that has the label of the digest of the sandbox image. If
 no Nix base fits, the volume of the sandbox is empty. When it starts an environment, the plugin deletes the ready Nix
-bases except the two newest of each image. It also deletes a Nix base that is not ready after
-24 hours.
+bases of the current image except the two newest. It also deletes a Nix base of the current image
+that is not ready after 24 hours. When the current image has a ready Nix base, the plugin deletes every ready Nix base of the
+other images. This keeps the VolumeSnapshot quota free for the sandbox archives. The user made this
+decision on 2026-11-22. Before that date, the plugin kept two Nix bases of each image. Until the
+current image has a ready Nix base, the plugin keeps the Nix bases of the other images. The plugin
+does not delete a Nix base that has no digest label.
 
 ## Considered Options
 
@@ -37,3 +41,6 @@ bases except the two newest of each image. It also deletes a Nix base that is no
 - A clone can hold a Nix base. If the CSI driver refuses to delete a snapshot that has a
   clone, the snapshot stays until the clone goes. The next start of an environment tries
   again.
+- The plugin cannot tell an older image from a newer image. If Hermes stays on the old image
+  after a new Nix base is ready, for example after a failed upgrade, the plugin deletes the new Nix
+  base. The next CronJob run makes it again.
