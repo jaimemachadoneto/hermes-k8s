@@ -47,12 +47,42 @@ def test_no_nix_base_for_the_image_gives_the_empty_volume():
     assert select_nix_base([base("o", OTHER, 1), base("n", IMAGE, 0, ready=False)], IMAGE) is None
 
 
-def test_the_clean_up_keeps_the_two_newest_ready_bases_of_each_image():
-    bases = [base(f"a{i}", IMAGE, i) for i in range(4)] + [
-        base(f"b{i}", OTHER, i) for i in range(3)
+def test_the_clean_up_keeps_the_two_newest_ready_bases_of_the_current_image():
+    bases = [base(f"a{i}", IMAGE, i) for i in range(4)]
+
+    assert sorted(nix_bases_to_delete(bases, IMAGE, now=NOW)) == ["a2", "a3"]
+
+
+def test_the_clean_up_deletes_every_base_of_other_images_when_the_current_image_has_a_ready_base():
+    bases = [base("a0", IMAGE, 1)] + [base(f"b{i}", OTHER, i + 2) for i in range(3)]
+    bases.append(base("c-failed", OTHER, 3, ready=False))
+    # A Nix base of another image can be in the making: it has a day before it counts as failed.
+    bases.append(base("c-building", OTHER, 0.1, ready=False))
+
+    assert sorted(nix_bases_to_delete(bases, IMAGE, now=NOW)) == ["b0", "b1", "b2", "c-failed"]
+
+
+def test_the_clean_up_keeps_the_bases_of_other_images_while_the_current_image_has_no_ready_base():
+    bases = [base(f"b{i}", OTHER, i + 2) for i in range(4)]
+    bases.append(base("a-building", IMAGE, 0.1, ready=False))
+
+    assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
+
+
+def test_the_clean_up_never_touches_a_base_without_digest_label():
+    bases = [
+        base("a0", IMAGE, 1),
+        NixBase("no-digest", "", NOW - 50 * DAY, True),
+        NixBase("no-digest-building", "", NOW - 50 * DAY, False),
     ]
 
-    assert sorted(nix_bases_to_delete(bases, IMAGE, now=NOW)) == ["a2", "a3", "b2"]
+    assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
+
+
+def test_the_clean_up_keeps_a_base_of_another_image_for_an_hour():
+    bases = [base("a0", IMAGE, 0.001), base("b0", OTHER, 0.01)]
+
+    assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
 
 
 def test_the_clean_up_keeps_a_ready_base_for_an_hour_even_when_it_is_not_among_the_two_newest():
@@ -64,7 +94,7 @@ def test_the_clean_up_keeps_a_ready_base_for_an_hour_even_when_it_is_not_among_t
 def test_the_clean_up_keeps_the_only_nix_base_of_the_current_image_when_it_is_old():
     bases = [base("current", IMAGE, 90), base("n0", OTHER, 1), base("n1", OTHER, 2)]
 
-    assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
+    assert sorted(nix_bases_to_delete(bases, IMAGE, now=NOW)) == ["n0", "n1"]
 
 
 def test_the_clean_up_deletes_a_nix_base_that_never_got_ready_only_after_a_day():
@@ -126,6 +156,14 @@ def test_creating_an_environment_deletes_the_old_bases(make_env, cluster):
     make_env()
 
     assert sorted(b.name for b in cluster.nix_bases) == ["a0", "a1"]
+
+
+def test_creating_an_environment_deletes_the_bases_of_older_images(make_env, cluster):
+    cluster.nix_bases = [base("a0", IMAGE, 1), base("b0", OTHER, 8), base("b1", OTHER, 9)]
+
+    make_env()
+
+    assert [b.name for b in cluster.nix_bases] == ["a0"]
 
 
 def test_a_failed_clean_up_does_not_stop_the_sandbox(make_env, cluster):
