@@ -140,8 +140,8 @@ class Cluster(Protocol):
         """Run `argv` in the pod of the Sandbox. Stderr joins the output.
 
         When `cancel` is set, return exit code 130. After `timeout` seconds, return exit code 124.
-        The real cluster closes the stream but does not kill the remote process: it stops when the
-        sandbox is suspended.
+        The real cluster closes the stream but does not kill the remote process. The caller stops
+        it with a second exec.
         Raise `SandboxNotFound` when the Sandbox does not exist, and `ClusterError` when it has no pod.
         """
         ...
