@@ -1,8 +1,8 @@
 # The builder of a Nix base (ADR 0003). The Nix base Job runs it in the sandbox image.
 # `copy` copies the Nix store of the image into the volume, the same way as the init step
 # of a sandbox. `clone` clones each repository of NIX_BASE_REPOS. `warm` runs `devenv shell`
-# in each clone, so that the store of the volume holds what these shells need. `all` does the
-# three steps in this order.
+# (or `nix develop` for a flake) in each clone, so that the store of the volume holds what
+# these shells need. `all` does the three steps in this order.
 # The Job runs `copy` with the volume at /data, `clone` with the token, and then `warm` with
 # the volume at /nix and with no token: the paths of the store must be the real paths while
 # Nix runs, and `warm` runs code of the repositories.
@@ -16,6 +16,7 @@
 #   NIX_BASE_TOKEN_FILE    /run/secrets/github/GITHUB_TOKEN  the token for the private repositories
 #   NIX_BASE_WORK          /tmp/nix-base                  the directory for the clones
 #   NIX_BASE_DEVENV        devenv                         the devenv command
+#   NIX_BASE_NIX           nix                            the nix command, for a flake shell
 set -euo pipefail
 
 target=${NIX_BASE_TARGET:-/data}
@@ -26,6 +27,7 @@ git_url=${NIX_BASE_GIT_URL:-https://github.com}
 token_file=${NIX_BASE_TOKEN_FILE:-/run/secrets/github/GITHUB_TOKEN}
 work=${NIX_BASE_WORK:-/tmp/nix-base}
 devenv=${NIX_BASE_DEVENV:-devenv}
+nix=${NIX_BASE_NIX:-nix}
 
 copy() {
   mkdir -p "$target/nix" "$target/workspace" "$target/home"
@@ -80,10 +82,21 @@ clone() {
   done
 }
 
+# A repository has a devenv shell (devenv.nix) or a flake shell (flake.nix, as home-ops).
+# devenv wins when a repository has both, because its shell is the one that the users enter.
 warm() {
   for repo in $repos; do
-    echo "nix-base-build: devenv shell in $repo"
-    (cd "$work/$(basename "$repo")" && "$devenv" shell -- true)
+    dir=$work/$(basename "$repo")
+    if [ -e "$dir/devenv.nix" ]; then
+      echo "nix-base-build: devenv shell in $repo"
+      (cd "$dir" && "$devenv" shell -- true)
+    elif [ -e "$dir/flake.nix" ]; then
+      echo "nix-base-build: nix develop in $repo"
+      (cd "$dir" && "$nix" develop --command true)
+    else
+      echo "nix-base-build: $repo has no devenv.nix and no flake.nix" >&2
+      return 1
+    fi
   done
   # The clones are not part of the Nix base. The evaluation cache and the store are.
   empty_work

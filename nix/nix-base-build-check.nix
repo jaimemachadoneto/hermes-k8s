@@ -76,30 +76,35 @@ pkgs.runCommand "nix-base-build-check"
     [ ! -e "$vol/nix/store/kept" ] || fail "an incomplete copy stayed"
     [ -e "$vol/nix/.closure-copied" ] || fail "no marker after the second copy"
 
-    # 4. The clone step clones each repository in order. The warm step runs devenv shell in each
-    # clone and removes the clones. Neither gets a token when no token file exists.
+    # 4. The clone step clones each repository in order. The warm step runs `devenv shell` in a
+    # clone with devenv.nix, else `nix develop` in a clone with flake.nix, and removes the clones.
+    # home-ops has only a flake. Neither step gets a token when no token file exists.
     git config --global user.email t@example.com
     git config --global user.name t
     git config --global init.defaultBranch main
-    for repo in owner/home-ops owner/hermes-k8s; do
+    for spec in owner/home-ops:flake.nix owner/hermes-k8s:devenv.nix,flake.nix owner/plain:README; do
+      repo=''${spec%%:*}
       mkdir -p "git/$repo"
       git init -q "git/$repo"
-      echo content > "git/$repo/devenv.nix"
-      git -C "git/$repo" add devenv.nix
+      for file in $(echo "''${spec#*:}" | tr , ' '); do
+        echo content > "git/$repo/$file"
+        git -C "git/$repo" add "$file"
+      done
       git -C "git/$repo" commit -qm init
       git clone -q --bare "git/$repo" "git/$repo.git"
     done
+    # One stub stands for devenv and for nix. It records the repository, the tool and the arguments.
     cat > devenv-stub <<'STUB'
     #!/bin/sh
-    echo "$(basename "$PWD") $*" >> "$STUB_LOG"
-    [ -e devenv.nix ] || exit 3
+    echo "$(basename "$PWD") $(basename "$0") $*" >> "$STUB_LOG"
     # The warm step must have no token in its environment.
     env | grep -q 'not-a-real-token\|GIT_CONFIG_VALUE' && echo "TOKEN-LEAK" >> "$STUB_LOG"
     [ -z "$STUB_FAIL" ] || exit 1
     STUB
     chmod +x devenv-stub
+    cp devenv-stub nix-stub
     export STUB_LOG=$TMPDIR/devenv.log STUB_FAIL=
-    export NIX_BASE_DEVENV=$TMPDIR/devenv-stub NIX_BASE_GIT_URL=file://$PWD/git
+    export NIX_BASE_DEVENV=$TMPDIR/devenv-stub NIX_BASE_NIX=$TMPDIR/nix-stub NIX_BASE_GIT_URL=file://$PWD/git
     # In the Job, the work directory is a volume mount on a read-only root, so the builder
     # can empty it but cannot remove it. A read-only parent does the same here.
     mkdir -p "$TMPDIR/mnt/work/old-clone"
@@ -108,13 +113,20 @@ pkgs.runCommand "nix-base-build-check"
     export NIX_BASE_REPOS="owner/home-ops owner/hermes-k8s"
     NIX_BASE_TARGET=$vol $build clone || fail "clone: the work directory is a mount point"
     [ ! -e "$NIX_BASE_WORK/old-clone" ] || fail "clone: an old clone stayed"
-    [ -e "$NIX_BASE_WORK/home-ops/devenv.nix" ] && [ -e "$NIX_BASE_WORK/hermes-k8s/devenv.nix" ] \
+    [ -e "$NIX_BASE_WORK/home-ops/flake.nix" ] && [ -e "$NIX_BASE_WORK/hermes-k8s/devenv.nix" ] \
       || fail "clone: a repository is missing"
     [ ! -e "$STUB_LOG" ] || fail "clone ran devenv"
     NIX_BASE_TARGET=$vol $build warm 2>/dev/null
-    [ "$(cat "$STUB_LOG")" = "$(printf '%s\n' 'home-ops shell -- true' 'hermes-k8s shell -- true')" ] \
-      || fail "devenv shell ran wrong: $(cat "$STUB_LOG")"
+    [ "$(cat "$STUB_LOG")" = "$(printf '%s\n' 'home-ops nix-stub develop --command true' 'hermes-k8s devenv-stub shell -- true')" ] \
+      || fail "the warm step ran wrong: $(cat "$STUB_LOG")"
     [ -d "$NIX_BASE_WORK" ] && [ -z "$(ls -A "$NIX_BASE_WORK")" ] || fail "the clones stayed"
+
+    # A repository with neither devenv.nix nor flake.nix is a mistake in the list: the Job fails.
+    NIX_BASE_REPOS=owner/plain NIX_BASE_TARGET=$vol $build clone 2>/dev/null
+    if NIX_BASE_REPOS=owner/plain NIX_BASE_TARGET=$vol $build warm >$TMPDIR/err 2>&1; then
+      fail "warm passed for a repository with no shell"
+    fi
+    grep -q 'no devenv.nix and no flake.nix' $TMPDIR/err || fail "warm gave no reason: $(cat $TMPDIR/err)"
 
     # 5. With a token file, git gets a helper that gives the token, and the token is not in an
     # argument. The warm step, which runs the code of the repositories, has no token.
@@ -151,11 +163,16 @@ pkgs.runCommand "nix-base-build-check"
     ! grep -q 'TOKEN-LEAK' "$STUB_LOG" || fail "the warm step has the token in its environment"
 
     # 6. A failed devenv fails the builder, so the Job makes no snapshot.
-    NIX_BASE_REPOS=owner/home-ops NIX_BASE_TARGET=$vol $build clone 2>/dev/null
-    if STUB_FAIL=1 NIX_BASE_TARGET=$vol NIX_BASE_REPOS=owner/home-ops $build warm >$TMPDIR/err 2>&1; then
+    NIX_BASE_REPOS=owner/hermes-k8s NIX_BASE_TARGET=$vol $build clone 2>/dev/null
+    if STUB_FAIL=1 NIX_BASE_TARGET=$vol NIX_BASE_REPOS=owner/hermes-k8s $build warm >$TMPDIR/err 2>&1; then
       fail "the builder passed when devenv failed"
     fi
-    grep -q 'devenv shell in owner/home-ops' "$TMPDIR/err" || fail "devenv did not run in step 6"
+    grep -q 'devenv shell in owner/hermes-k8s' "$TMPDIR/err" || fail "devenv did not run in step 6"
+    # A failed nix develop also fails the builder.
+    NIX_BASE_REPOS=owner/home-ops NIX_BASE_TARGET=$vol $build clone 2>/dev/null
+    if STUB_FAIL=1 NIX_BASE_TARGET=$vol NIX_BASE_REPOS=owner/home-ops $build warm >$TMPDIR/err 2>&1; then
+      fail "the builder passed when nix develop failed"
+    fi
 
     # 7. A missing repository fails the clone step and runs no devenv.
     : > "$STUB_LOG"
@@ -168,7 +185,7 @@ pkgs.runCommand "nix-base-build-check"
     : > "$STUB_LOG"
     NIX_BASE_TARGET=$TMPDIR/vol2 NIX_BASE_REPOS=owner/hermes-k8s $build all 2>/dev/null
     [ -e "$TMPDIR/vol2/nix/.closure-copied" ] || fail "all: no copy"
-    grep -q '^hermes-k8s shell' "$STUB_LOG" || fail "all: no devenv shell"
+    grep -q '^hermes-k8s devenv-stub shell' "$STUB_LOG" || fail "all: no devenv shell"
     code=0
     $build bogus 2>/dev/null || code=$?
     [ "$code" = 2 ] || fail "an unknown step exits with $code, want 2"
