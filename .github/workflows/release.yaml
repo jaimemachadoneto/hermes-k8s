@@ -1,6 +1,8 @@
 name: release
 
-# `deploy patch|minor|major` pushes the tag vX.Y.Z that starts this workflow.
+# Two ways start a release. `deploy patch|minor|major` pushes the tag vX.Y.Z. Or the button
+# "Run workflow" on the Actions page of this workflow (on main) makes the tag in the job `tag`.
+# A tag that GITHUB_TOKEN pushes starts no other workflow, so the same run goes on.
 # This workflow builds nothing. CI on main built, scanned and pushed the images as
 # sha-<commit>. The job `promote` finds the green CI run of the commit of the tag. Then it
 # adds the tag X.Y.Z to the same images, with the same digests. The job `gitops` opens a PR
@@ -12,6 +14,13 @@ name: release
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: The part of the version to increase
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: read
@@ -27,13 +36,56 @@ env:
   GITOPS_FILE: kubernetes/apps/ai/hermes/app/helmrelease.yaml
 
 jobs:
+  # Only the button runs this job. It tags the commit of main that the run started on.
+  tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Tag the release
+        id: tag
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_NAME" != main ]; then
+            echo "::error::Start the release from main, not from $GITHUB_REF_NAME."
+            exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          tag=$(scripts/next-version.sh "$BUMP")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "release $tag" "$sha"
+          git push origin "refs/tags/$tag"
+          {
+            echo "tag=$tag"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "### Tag \`$tag\` on \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
+
   promote:
+    needs: tag
+    # On a tag push, the job `tag` is skipped, and this job runs on the pushed tag.
+    if: ${{ !cancelled() && (needs.tag.result == 'success' || needs.tag.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       actions: read
       packages: write
+    env:
+      RELEASE_SHA: ${{ needs.tag.outputs.sha || github.sha }}
+      RELEASE_TAG: ${{ needs.tag.outputs.tag || github.ref_name }}
     outputs:
       hermes-tag: ${{ steps.copy.outputs.hermes-tag }}
       sandbox-ref: ${{ steps.copy.outputs.sandbox-ref }}
@@ -41,12 +93,13 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
       # A tag on another branch must not publish images.
       - name: The tag is on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+        run: git merge-base --is-ancestor "$RELEASE_SHA" origin/main
 
       # The images of the tag are the images that the run of CI on main built, scanned and
       # pushed. A run on a push is green only when its job `publish` passed. A tag made right
@@ -54,7 +107,7 @@ jobs:
       - name: Wait for CI on main for this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/wait-for-ci.sh "$GITHUB_SHA"
+        run: scripts/wait-for-ci.sh "$RELEASE_SHA"
 
       # skopeo is on the hosted runner. The step fails if a new image of the runner does not have it.
       - name: Copy the images to the release tag
@@ -62,14 +115,12 @@ jobs:
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF_NAME: ${{ github.ref_name }}
-          COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           skopeo --version
-          version=${REF_NAME#v}
-          sandbox_ref=$(scripts/promote-image.sh "$SANDBOX_IMAGE" "sha-$COMMIT" "$version")
-          hermes_ref=$(scripts/promote-image.sh "$HERMES_IMAGE" "sha-$COMMIT" "$version")
+          version=${RELEASE_TAG#v}
+          sandbox_ref=$(scripts/promote-image.sh "$SANDBOX_IMAGE" "sha-$RELEASE_SHA" "$version")
+          hermes_ref=$(scripts/promote-image.sh "$HERMES_IMAGE" "sha-$RELEASE_SHA" "$version")
           {
             echo "version=$version"
             echo "sandbox-ref=$sandbox_ref"
@@ -84,6 +135,8 @@ jobs:
   # If this job fails, the images have the release tag already. Run the job again.
   gitops:
     needs: promote
+    # A skipped job `tag` (a tag push) skips each later job that has no condition of its own.
+    if: ${{ !cancelled() && needs.promote.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
