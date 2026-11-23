@@ -3,8 +3,9 @@
 ADR 0003 says that a Job makes the Nix base. This ADR gives the parts of that Job.
 The pod of the Job has an ephemeral volume of 20Gi and three steps. The init step
 `copy-closure` runs `nix-base-build copy` with the volume at `/data`. The init step `warm`
-runs `nix-base-build warm` with the volume at `/nix`, so that `devenv shell` runs for each
-configured repository on the real paths of the store. The container `snapshot` makes the
+runs `nix-base-build warm` with the volume at `/nix`, so that the shell of each configured
+repository (`devenv shell`, or `nix develop` for a repository with only a flake) runs on the
+real paths of the store. The container `snapshot` makes the
 VolumeSnapshot (class `csi-ceph-blockpool`) with the labels `hermes-k8s/kind=nix-base` and
 `hermes-k8s/image-digest=<first 32 characters of the digest>`. It then deletes the volume to
 free the quota. The plugin selects the newest ready Nix base that has the label of the digest of the sandbox image. If
