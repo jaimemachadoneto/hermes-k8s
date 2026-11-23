@@ -110,6 +110,9 @@ pkgs.runCommand "nix-base-build-check"
     mkdir -p "$TMPDIR/mnt/work/old-clone"
     chmod 555 "$TMPDIR/mnt"
     export NIX_BASE_WORK=$TMPDIR/mnt/work NIX_BASE_TOKEN_FILE=$TMPDIR/no-token
+    # warm clears the setgid bit of the volume at /nix. Here a directory stands for the volume.
+    export NIX_BASE_NIX_ROOT=$TMPDIR/nix-root
+    mkdir -p "$NIX_BASE_NIX_ROOT/store"
     export NIX_BASE_REPOS="owner/home-ops owner/hermes-k8s"
     NIX_BASE_TARGET=$vol $build clone || fail "clone: the work directory is a mount point"
     [ ! -e "$NIX_BASE_WORK/old-clone" ] || fail "clone: an old clone stayed"

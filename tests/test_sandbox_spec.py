@@ -319,3 +319,27 @@ def test_the_init_step_moves_an_older_home_into_the_workspace(tmp_path):
     data = _run_init_script(tmp_path, marker=True, half_copy=False)
 
     assert (data / "workspace" / ".home" / ".bashrc").read_text() == "old"
+
+
+def _setgid(path):
+    import stat
+
+    return bool(path.stat().st_mode & stat.S_ISGID)
+
+
+@pytest.mark.parametrize("marker", [False, True])
+def test_the_init_step_clears_the_setgid_bit_of_the_store_and_the_build_directory(tmp_path, marker):
+    # fsGroup gives the volume the setgid bit, and each new directory inherits it. The syscall
+    # filter of Nix refuses a chmod that keeps the bit, so a build in the sandbox fails.
+    (tmp_path / "data" / "nix").mkdir(parents=True)
+    (tmp_path / "data" / "nix").chmod(0o2775)
+    if marker:
+        (tmp_path / "data" / "nix" / "store").mkdir()
+        (tmp_path / "data" / "nix" / "store").chmod(0o2775)
+
+    data = _run_init_script(tmp_path, marker=marker, half_copy=False)
+
+    assert not _setgid(data / "nix" / "store")
+    assert not _setgid(data / "nix" / "var" / "nix" / "builds")
+    # The root of the volume keeps its bit, or the kubelet changes the full volume again.
+    assert _setgid(data / "nix")
