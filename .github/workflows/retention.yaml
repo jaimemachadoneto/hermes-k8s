@@ -1,0 +1,51 @@
+name: retention
+
+# CI pushes each image of main as sha-<commit>. This workflow deletes a version of a package
+# when it is older than 30 days and each of its tags is sha-<commit>. A release adds the tag
+# X.Y.Z to a version, so the workflow never deletes a released version. The rule is in
+# scripts/prune-versions.py. A manual run starts as a dry run.
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Only list the versions that the run would delete.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retention
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The schedule has no input, so a scheduled run deletes. A manual run reads the input.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || false }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # Each package runs even when the first one fails, so one error hides no other.
+      - name: Delete the old commit versions
+        run: |
+          set -uo pipefail
+          flag=()
+          [ "$DRY_RUN" = true ] && flag=(--dry-run)
+          failed=0
+          for package in hermes hermes-sandbox; do
+            python3 -I scripts/prune-versions.py --owner "$GITHUB_REPOSITORY_OWNER" \
+              --package "$package" "${flag[@]}" || failed=1
+          done
+          exit "$failed"

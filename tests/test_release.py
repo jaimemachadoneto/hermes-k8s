@@ -256,23 +256,53 @@ def test_release_jobs_run_on_hosted_runners_with_least_privilege():
     wf = workflow("release.yaml")
 
     assert wf["permissions"] == {"contents": "read"}
-    publish_job = wf["jobs"]["publish"]
-    assert publish_job["runs-on"] == "ubuntu-latest"
-    assert publish_job["permissions"] == {"contents": "read", "packages": "write"}
+    promote = wf["jobs"]["promote"]
+    assert promote["runs-on"] == "ubuntu-latest"
+    # The job reads the CI runs and copies a tag inside ghcr.io. It signs nothing.
+    assert promote["permissions"] == {"contents": "read", "actions": "read", "packages": "write"}
     assert wf["jobs"]["gitops"]["runs-on"] == "ubuntu-latest"
-    assert wf["jobs"]["gitops"]["needs"] == "publish"
+    assert wf["jobs"]["gitops"]["needs"] == "promote"
 
 
-def test_release_scans_before_it_pushes_and_checks_first():
+def test_release_does_not_build_or_install_nix():
     text = (ROOT / ".github" / "workflows" / "release.yaml").read_text()
 
-    assert (
-        text.index("nix flake check") < text.index("trivy") < text.index("scripts/publish-image.sh")
-    )
-    for image in ("sandbox-image", "hermes-image"):
-        assert f".#{image}" in text
-    assert "ghcr.io/jaimemachadoneto/hermes-sandbox" in text
-    assert re.search(r"ghcr\.io/jaimemachadoneto/hermes(?![-\w])", text)
+    assert not re.search(r"\bnix\b|cachix|determinate", text, re.IGNORECASE)
+    assert "trivy" not in text
+    assert "publish-image.sh" not in text
+
+
+def test_release_needs_a_green_ci_run_of_the_commit_on_main():
+    wf = workflow("release.yaml")
+    steps = wf["jobs"]["promote"]["steps"]
+    check = next(s for s in steps if "gh run list" in s.get("run", ""))
+    script = check["run"]
+
+    for part in (
+        "--workflow ci.yaml",
+        '--commit "$GITHUB_SHA"',
+        "--branch main",
+        "--event push",
+        "--status success",
+    ):
+        assert part in script, part
+    # No green run: the step must fail with a message that says why.
+    assert "exit 1" in script
+    assert "::error::" in script
+    # The check comes before the copy of the images.
+    copy = next(i for i, s in enumerate(steps) if "promote-image.sh" in s.get("run", ""))
+    assert steps.index(check) < copy
+
+
+def test_release_copies_the_ci_images_with_the_promote_script():
+    wf = workflow("release.yaml")
+    step = next(s for s in wf["jobs"]["promote"]["steps"] if "promote-image.sh" in s.get("run", ""))
+
+    assert "sha-$COMMIT" in step["run"]
+    assert "$VERSION" in step["run"] or "$version" in step["run"]
+    for image in ("SANDBOX_IMAGE", "HERMES_IMAGE"):
+        assert image in step["run"]
+    assert wf["jobs"]["promote"]["outputs"].keys() == {"hermes-tag", "sandbox-ref", "version"}
 
 
 def test_release_opens_the_pull_request_with_the_secret_of_the_other_repositories():
@@ -317,30 +347,26 @@ def cachix_steps(wf):
 
 
 def test_each_build_job_reads_the_public_cache_and_never_pushes_for_a_pull_request():
-    for name in ("ci.yaml", "release.yaml"):
-        steps = cachix_steps(workflow(name))
-        assert steps, name
-        for _, step in steps:
-            assert step["with"]["name"] == "hermes-k8s"
-            assert step["with"]["authToken"] == "${{ secrets.CACHIX_AUTH_TOKEN }}"
+    steps = cachix_steps(workflow("ci.yaml"))
+    assert len(steps) == 2
+    for _, step in steps:
+        assert step["with"]["name"] == "hermes-k8s"
+        assert step["with"]["authToken"] == "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
 
 def test_the_cache_push_is_skipped_only_for_the_pull_request_event():
     wf = workflow("ci.yaml")
-    ((_, step),) = cachix_steps(wf)
-    expr = step["with"]["skipPush"]
-
-    assert expr == "${{ github.event_name == 'pull_request' }}"
+    for _, step in cachix_steps(wf):
+        assert step["with"]["skipPush"] == "${{ github.event_name == 'pull_request' }}"
     assert "pull_request" in wf["on"]
     assert wf["on"]["push"] == {"branches": ["main"]}
     release = workflow("release.yaml")
-    for _, release_step in cachix_steps(release):
-        assert release_step["with"]["skipPush"] == "${{ github.event_name == 'pull_request' }}"
+    assert not cachix_steps(release)
     assert "pull_request" not in release["on"]
 
 
 def test_the_cache_filter_keeps_claude_code_and_the_images_out_of_the_cache():
-    steps = cachix_steps(workflow("ci.yaml")) + cachix_steps(workflow("release.yaml"))
+    steps = cachix_steps(workflow("ci.yaml"))
     assert steps
     for _, step in steps:
         pattern = re.compile(step["with"]["pushFilter"])
@@ -412,16 +438,77 @@ def test_renovate_never_proposes_a_calendar_tag_of_hermes():
 
 def test_the_scan_reads_the_ignore_file_and_scans_each_image_before_it_fails():
     step = next(
-        s
-        for s in workflow("release.yaml")["jobs"]["publish"]["steps"]
-        if "trivy" in s.get("run", "")
+        s for s in workflow("ci.yaml")["jobs"]["publish"]["steps"] if "trivy" in s.get("run", "")
     )
     script = step["run"]
 
+    assert "--severity HIGH,CRITICAL --ignore-unfixed" in script
     assert "--ignorefile .trivyignore.yaml" in script
     # A failure in the first image must not hide the findings of the second image.
     assert "--exit-code 1 ||" in script
     assert script.rstrip().endswith('exit "$failed"')
+    for image in ("sandbox-image", "hermes-image"):
+        assert image in script
+
+
+# --- CI: the push of the images ------------------------------------------------------------
+
+
+def test_the_push_job_never_runs_for_a_pull_request():
+    wf = workflow("ci.yaml")
+    job = wf["jobs"]["publish"]
+
+    assert job["if"] == "github.event_name == 'push'"
+    assert job["needs"] == "check"
+
+
+def test_only_the_push_job_can_write_packages_and_sign():
+    wf = workflow("ci.yaml")
+
+    assert wf["permissions"] == {"contents": "read"}
+    assert "permissions" not in wf["jobs"]["check"]
+    assert wf["jobs"]["publish"]["permissions"] == {
+        "contents": "read",
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write",
+    }
+
+
+def test_the_push_job_scans_then_pushes_then_attests_each_image():
+    steps = workflow("ci.yaml")["jobs"]["publish"]["steps"]
+    texts = [json.dumps(s) for s in steps]
+    scan = next(i for i, t in enumerate(texts) if "trivy" in t)
+    push = next(i for i, t in enumerate(texts) if "scripts/publish-image.sh" in t)
+    attest = [i for i, s in enumerate(steps) if "attest-build-provenance" in s.get("uses", "")]
+
+    assert scan < push < min(attest)
+    # One attestation for each image, stored in the registry.
+    assert len(attest) == 2
+    for i in attest:
+        with_ = steps[i]["with"]
+        assert with_["push-to-registry"] is True
+        assert with_["subject-digest"].startswith("${{ steps.")
+    names = {steps[i]["with"]["subject-name"] for i in attest}
+    assert names == {
+        "${{ env.SANDBOX_IMAGE }}",
+        "${{ env.HERMES_IMAGE }}",
+    }
+
+
+def test_the_push_job_pushes_only_the_commit_tag():
+    steps = workflow("ci.yaml")["jobs"]["publish"]["steps"]
+    step = next(s for s in steps if "scripts/publish-image.sh" in s.get("run", ""))
+
+    assert '"sha-$COMMIT"' in step["run"]
+    assert "$VERSION" not in step["run"]
+    assert step["env"]["COMMIT"] == "${{ github.sha }}"
+
+
+def test_the_images_are_pushed_with_no_secret_beyond_the_token_of_the_run():
+    text = (ROOT / ".github" / "workflows" / "ci.yaml").read_text()
+
+    assert "secrets.MY_PAT" not in text
 
 
 def test_each_ignored_finding_has_a_scope_a_reason_and_an_expiry():
@@ -463,3 +550,56 @@ def test_two_releases_never_run_at_the_same_time():
         "group": "release",
         "cancel-in-progress": False,
     }
+
+
+def test_release_checks_the_branch_and_the_ci_run_before_it_copies():
+    steps = workflow("release.yaml")["jobs"]["promote"]["steps"]
+    checkout = steps[0]
+    branch = next(s for s in steps if "merge-base --is-ancestor" in s.get("run", ""))
+    ci = next(s for s in steps if "gh run list" in s.get("run", ""))
+    copy = next(s for s in steps if "promote-image.sh" in s.get("run", ""))
+
+    assert checkout["with"]["fetch-depth"] == 0
+    assert steps.index(branch) < steps.index(ci) < steps.index(copy)
+    for step in (branch, ci):
+        assert "continue-on-error" not in step
+        assert "if" not in step
+    assert '"$runs" -lt 1' in ci["run"]
+
+
+def test_each_attestation_uses_the_digest_of_the_push_step():
+    steps = workflow("ci.yaml")["jobs"]["publish"]["steps"]
+    push = next(s for s in steps if "scripts/publish-image.sh" in s.get("run", ""))
+    attest = {
+        s["with"]["subject-name"]: s
+        for s in steps
+        if "attest-build-provenance" in s.get("uses", "")
+    }
+
+    assert push["id"] == "push"
+    assert attest["${{ env.SANDBOX_IMAGE }}"]["with"]["subject-digest"] == (
+        "${{ steps.push.outputs.sandbox-digest }}"
+    )
+    assert attest["${{ env.HERMES_IMAGE }}"]["with"]["subject-digest"] == (
+        "${{ steps.push.outputs.hermes-digest }}"
+    )
+    for step in attest.values():
+        assert "if" not in step
+        assert "continue-on-error" not in step
+
+
+def test_no_other_job_of_ci_can_write_packages_or_sign():
+    wf = workflow("ci.yaml")
+
+    for name, job in wf["jobs"].items():
+        if name != "publish":
+            assert not set(job.get("permissions", {})) & {"packages", "id-token", "attestations"}
+
+
+def test_the_job_logs_in_to_the_registry_before_the_attestations():
+    steps = workflow("ci.yaml")["jobs"]["publish"]["steps"]
+    login = next(i for i, s in enumerate(steps) if "docker login ghcr.io" in s.get("run", ""))
+    first = next(i for i, s in enumerate(steps) if "attest-build-provenance" in s.get("uses", ""))
+
+    assert login < first
+    assert "--password-stdin" in steps[login]["run"]

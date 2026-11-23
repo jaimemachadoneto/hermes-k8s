@@ -1,9 +1,10 @@
 name: release
 
 # `deploy patch|minor|major` pushes the tag vX.Y.Z that starts this workflow.
-# The workflow checks and builds both images. It scans them. It pushes them
-# to ghcr.io as X.Y.Z and sha-<commit>. Then it opens a PR in home-ops that
-# sets the new references with their digests. Flux applies the PR after the
+# This workflow builds nothing. CI on main built, scanned and pushed the images as
+# sha-<commit>. The job `promote` finds the green CI run of the commit of the tag. Then it
+# adds the tag X.Y.Z to the same images, with the same digests. The job `gitops` opens a PR
+# in home-ops that sets the new references with their digests. Flux applies the PR after the
 # merge.
 #
 # The secret MY_PAT is a token that can push a branch to home-ops and open a
@@ -26,16 +27,17 @@ env:
   GITOPS_FILE: kubernetes/apps/ai/hermes/app/helmrelease.yaml
 
 jobs:
-  publish:
+  promote:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
       packages: write
     outputs:
-      hermes-tag: ${{ steps.push.outputs.hermes-tag }}
-      sandbox-ref: ${{ steps.push.outputs.sandbox-ref }}
-      version: ${{ steps.push.outputs.version }}
+      hermes-tag: ${{ steps.copy.outputs.hermes-tag }}
+      sandbox-ref: ${{ steps.copy.outputs.sandbox-ref }}
+      version: ${{ steps.copy.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -46,57 +48,24 @@ jobs:
       - name: The tag is on main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
-      # A hosted runner has little free disk space. The build of the images needs much of it.
-      # Remove the toolchains that this job does not use.
-      - name: Free disk space
+      # The images of the tag are the images that this run of CI built, scanned and pushed.
+      # A run of CI on a push is green only when its job `publish` passed.
+      - name: CI on main passed for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          df -h /
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml \
+            --commit "$GITHUB_SHA" --branch main --event push --status success \
+            --json databaseId --jq 'length')
+          if [ "$runs" -lt 1 ]; then
+            echo "::error::No successful run of ci.yaml on main for commit $GITHUB_SHA. Wait for CI on main to pass. Then run the release again."
+            exit 1
+          fi
 
-      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
-        with:
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-
-      # The cache is public.
-      # The license of claude-code does not allow redistribution. Each image contains
-      # claude-code. The filter keeps claude-code, its download and the image paths out of
-      # the cache.
-      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: hermes-k8s
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: ${{ github.event_name == 'pull_request' }}
-          pushFilter: '(claude-code|hermes(-sandbox)?\.tar\.gz$|-stream-|customisation-layer|-layers\.json$|-conf\.json$|-excludePaths$|-claude\.zst$)'
-
-      - name: Flake check
-        run: nix flake check
-
-      - name: Build the images
-        run: |
-          set -euo pipefail
-          nix build .#sandbox-image --no-link
-          nix build .#hermes-image --no-link
-
-      # Scan the images before the push. A failed scan keeps the image off the registry.
-      # The scan looks at the tarball, so it needs no registry and no daemon.
-      # .trivyignore.yaml holds the accepted findings, each with a reason and an expiry.
-      # Scan each image before the step fails, so one run shows all the findings.
-      - name: Scan the images
-        run: |
-          set -euo pipefail
-          failed=0
-          for attr in sandbox-image hermes-image; do
-            out=$(nix build ".#$attr" --no-link --print-out-paths)
-            nix shell --inputs-from . nixpkgs#trivy -c trivy image \
-              --input "$out" --severity HIGH,CRITICAL --ignore-unfixed \
-              --ignorefile .trivyignore.yaml --exit-code 1 || failed=1
-          done
-          exit "$failed"
-
-      - name: Push the images
-        id: push
+      # skopeo is on the hosted runner. The step fails if a new image of the runner does not have it.
+      - name: Copy the images to the release tag
+        id: copy
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,13 +73,10 @@ jobs:
           COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
+          skopeo --version
           version=${REF_NAME#v}
-          push() {
-            nix shell --inputs-from . nixpkgs#skopeo -c \
-              scripts/publish-image.sh "$1" "$2" "sha-$COMMIT" "$version"
-          }
-          sandbox_ref=$(push sandbox-image "$SANDBOX_IMAGE")
-          hermes_ref=$(push hermes-image "$HERMES_IMAGE")
+          sandbox_ref=$(scripts/promote-image.sh "$SANDBOX_IMAGE" "sha-$COMMIT" "$version")
+          hermes_ref=$(scripts/promote-image.sh "$HERMES_IMAGE" "sha-$COMMIT" "$version")
           {
             echo "version=$version"
             echo "sandbox-ref=$sandbox_ref"
@@ -122,17 +88,17 @@ jobs:
             echo "- \`$hermes_ref\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # If this job fails, the images are on ghcr.io already. Run the job again.
+  # If this job fails, the images have the release tag already. Run the job again.
   gitops:
-    needs: publish
+    needs: promote
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
     env:
-      VERSION: ${{ needs.publish.outputs.version }}
-      HERMES_TAG: ${{ needs.publish.outputs.hermes-tag }}
-      SANDBOX_REF: ${{ needs.publish.outputs.sandbox-ref }}
+      VERSION: ${{ needs.promote.outputs.version }}
+      HERMES_TAG: ${{ needs.promote.outputs.hermes-tag }}
+      SANDBOX_REF: ${{ needs.promote.outputs.sandbox-ref }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -157,16 +123,16 @@ jobs:
         with:
           path: gitops
           token: ${{ secrets.MY_PAT }}
-          branch: deploy/${{ github.event.repository.name }}-${{ needs.publish.outputs.version }}
+          branch: deploy/${{ github.event.repository.name }}-${{ needs.promote.outputs.version }}
           delete-branch: true
-          commit-message: deploy ${{ github.event.repository.name }} ${{ needs.publish.outputs.version }}
-          title: deploy ${{ github.event.repository.name }} ${{ needs.publish.outputs.version }}
+          commit-message: deploy ${{ github.event.repository.name }} ${{ needs.promote.outputs.version }}
+          title: deploy ${{ github.event.repository.name }} ${{ needs.promote.outputs.version }}
           body: |
             Set the Hermes image and the sandbox image (`HERMES_K8S_SANDBOX_IMAGE`) in `${{ env.GITOPS_FILE }}`. Each reference has its digest.
 
             - Hermes: `${{ env.HERMES_TAG }}`
             - Sandbox: `${{ env.SANDBOX_REF }}`
-            - Source: ${{ github.server_url }}/${{ github.repository }}/tree/v${{ needs.publish.outputs.version }}
+            - Source: ${{ github.server_url }}/${{ github.repository }}/tree/v${{ needs.promote.outputs.version }}
             - Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Flux applies this PR after the merge.
