@@ -42,8 +42,9 @@ copy() {
   fi
   cp -a --no-preserve=ownership "$source_store" "$target/nix/store"
   # Without its database, Nix does not know the paths of the copy and downloads them again.
-  NIX_STATE_DIR=$target/nix/var/nix NIX_LOG_DIR=$target/nix/var/log/nix \
-    nix-store --load-db <"$registration"
+  # The store of the image is read-only, and Nix writes `.links` into the store that it opens.
+  # The root of the store URL sends the store, the database and the logs to the volume.
+  nix-store --store "local?root=$target" --load-db <"$registration"
   touch "$target/nix/.closure-copied"
 }
 

@@ -199,7 +199,13 @@ def test_the_init_step_copies_the_store_into_an_empty_volume(tmp_path):
 def test_the_init_step_registers_the_paths_of_the_image_in_the_database_of_the_volume(tmp_path):
     data = _run_init_script(tmp_path, marker=False, half_copy=False)
 
-    assert (tmp_path / "load-db.args").read_text() == f"{data}/nix/var/nix --load-db\n"
+    # The store URL keeps the database, the logs and `.links` on the volume. The store of the
+    # image is read-only in the pod.
+    assert (tmp_path / "load-db.args").read_text().split() == [
+        "--store",
+        f"local?root={data}",
+        "--load-db",
+    ]
     assert (tmp_path / "load-db.input").read_text() == "registration of the image\n"
 
 

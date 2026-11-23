@@ -49,13 +49,20 @@ pkgs.runCommand "nix-base-build-check"
 
     # 1. The copy fills an empty volume, writes the marker and loads the database.
     vol=$TMPDIR/vol
+    # In the pod, the store of the image is read-only. The load must write only to the volume.
+    # A build with no sandbox sees the real store, which has `.links` already. There the test
+    # can only examine the volume.
+    links_before=no
+    [ -e /nix/store/.links ] && links_before=yes
     NIX_BASE_TARGET=$vol $build copy
+    [ "$links_before" = yes ] || [ ! -e /nix/store/.links ] || fail "the load of the database wrote to /nix/store"
+    [ -d "$vol/nix/store/.links" ] || fail "the load of the database did not use the store of the volume"
     [ "$(cat "$vol/nix/store/pkg/bin/tool")" = tool ] || fail "the store is not copied"
     [ -e "$vol/nix/.closure-copied" ] || fail "no marker .closure-copied"
     [ -d "$vol/workspace" ] && [ -d "$vol/home" ] || fail "no workspace or home directory"
     [ -s "$vol/nix/var/nix/db/db.sqlite" ] || fail "the Nix database of the volume is empty"
     first=$(head -1 ${registration})
-    NIX_STATE_DIR=$vol/nix/var/nix nix-store --check-validity "$first" 2>/dev/null \
+    nix-store --store "local?root=$vol" --check-validity "$first" 2>/dev/null \
       || fail "the database does not know $first"
 
     # 2. A volume with the marker is not copied again.
