@@ -60,6 +60,104 @@ def test_an_interrupt_stops_a_running_command_with_exit_code_130(make_env):
     assert time.monotonic() - started < 10
 
 
+# Shell text that runs a parent and a child, saves their PIDs, and waits.
+_PARENT_AND_CHILD = "sleep 300 & echo $! > child.pid; echo $$ > parent.pid; wait"
+_ALIVE = (
+    'for f in parent.pid child.pid; do p=$(cat "$f"); '
+    '[ -d "/proc/$p" ] && ! grep -q "^State:.Z" "/proc/$p/status" && echo "$f alive"; done; true'
+)
+
+
+def _alive(env) -> str:
+    """Name the saved PIDs whose process still runs in the sandbox."""
+    return env.execute(_ALIVE)["output"]
+
+
+def _wait_until_gone(env) -> str:
+    import time
+
+    deadline = time.monotonic() + 15
+    while True:
+        alive = _alive(env)
+        if not alive.strip() or time.monotonic() >= deadline:
+            return alive
+        time.sleep(0.2)
+
+
+def _stop_leftovers(env) -> None:
+    env.execute("kill -KILL $(cat parent.pid child.pid) 2>/dev/null; true")
+
+
+def test_a_command_that_times_out_is_stopped_in_the_sandbox_with_its_children(make_env):
+    env = make_env()
+    try:
+        result = env.execute(_PARENT_AND_CHILD, timeout=1)
+
+        assert result["returncode"] == 124
+        assert _wait_until_gone(env).strip() == ""
+    finally:
+        _stop_leftovers(env)
+
+
+def test_a_command_that_the_user_cancels_is_stopped_in_the_sandbox_with_its_children(make_env):
+    import threading
+
+    from tools.interrupt import set_interrupt
+
+    env = make_env()
+    tid = threading.current_thread().ident
+    timer = threading.Timer(1.0, set_interrupt, args=(True, tid))
+    timer.start()
+    try:
+        result = env.execute(_PARENT_AND_CHILD, timeout=60)
+        assert result["returncode"] == 130
+    finally:
+        timer.cancel()
+        set_interrupt(False, tid)
+    try:
+        assert _wait_until_gone(env).strip() == ""
+    finally:
+        _stop_leftovers(env)
+
+
+def test_a_command_that_ignores_the_first_signal_is_still_stopped(make_env):
+    env = make_env()
+    command = (
+        "trap '' TERM; (trap '' TERM; sleep 300) & echo $! > child.pid; echo $$ > parent.pid; wait"
+    )
+    try:
+        result = env.execute(command, timeout=1)
+
+        assert result["returncode"] == 124
+        assert _wait_until_gone(env).strip() == ""
+    finally:
+        _stop_leftovers(env)
+
+
+def test_a_background_job_of_a_command_that_ended_is_not_stopped(make_env):
+    env = make_env()
+    try:
+        result = env.execute("sleep 300 & echo $! > child.pid; echo $$ > parent.pid", timeout=30)
+        assert result["returncode"] == 0
+
+        # A later command and a later timeout do not touch the job of an earlier command.
+        env.execute("sleep 30", timeout=1)
+
+        assert "child.pid alive" in _alive(env)
+    finally:
+        _stop_leftovers(env)
+
+
+def test_the_stop_keeps_the_directory_and_the_exports_of_later_commands(make_env):
+    env = make_env()
+    env.execute("mkdir -p kept && cd kept && export STAGE=one")
+
+    env.execute("sleep 30", timeout=1)
+
+    assert env.execute("pwd")["output"].strip().endswith("/kept")
+    assert env.execute("echo $STAGE")["output"].strip() == "one"
+
+
 def test_cleanup_suspends_the_sandbox_and_the_next_environment_of_the_task_resumes_it(
     make_env, cluster
 ):

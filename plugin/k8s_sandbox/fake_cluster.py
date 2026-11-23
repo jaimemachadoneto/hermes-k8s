@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import select
-import signal
 import subprocess
 import threading
 import time
@@ -229,10 +228,12 @@ def _collect(proc: subprocess.Popen, timeout: float, cancel: CancelToken) -> Exe
                     break
                 chunks.append(chunk)
             return ExecResult(_decode(chunks), proc.returncode)
+        # The real client closes the stream and leaves the remote process alone. So does this
+        # fake: only a second exec can stop the command.
         if cancel.cancelled:
-            return ExecResult(_decode(chunks) + _kill(proc), 130)
+            return ExecResult(_decode(chunks), 130)
         if time.monotonic() >= deadline:
-            return ExecResult(_decode(chunks) + _kill(proc), 124)
+            return ExecResult(_decode(chunks), 124)
 
 
 def _feed(proc: subprocess.Popen, data: bytes) -> None:
@@ -247,16 +248,6 @@ def _feed(proc: subprocess.Popen, data: bytes) -> None:
             proc.stdin.close()
         except OSError, ValueError:
             pass
-
-
-def _kill(proc: subprocess.Popen) -> str:
-    """Stop the process group, and return the output that it wrote before the stop."""
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    out, _ = proc.communicate()
-    return out.decode("utf-8", "replace") if out else ""
 
 
 def _decode(chunks: list[bytes]) -> str:

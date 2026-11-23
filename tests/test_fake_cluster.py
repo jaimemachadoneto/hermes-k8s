@@ -65,7 +65,16 @@ def test_exec_obeys_the_timeout_of_a_command_that_closes_its_output(cluster):
     cluster.create_sandbox("closed", image=IMAGE, labels={})
     started = time.monotonic()
     result = cluster.exec(
-        "closed", ["bash", "-c", "exec >&- 2>&-; sleep 600"], timeout=1, cancel=CancelToken()
+        "closed",
+        ["bash", "-c", "exec >&- 2>&-; echo $$ > pid; exec sleep 600"],
+        timeout=1,
+        cancel=CancelToken(),
     )
-    assert result.exit_code == 124
-    assert time.monotonic() - started < 10
+    pid = int((cluster.sandboxes["closed"].directory / "pid").read_text())
+    try:
+        assert result.exit_code == 124
+        assert time.monotonic() - started < 10
+        # Like a real pod, the fake leaves the process to a second exec.
+        os.kill(pid, 0)
+    finally:
+        os.kill(pid, signal.SIGKILL)

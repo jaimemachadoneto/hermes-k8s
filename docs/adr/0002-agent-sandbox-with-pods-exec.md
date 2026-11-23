@@ -24,3 +24,7 @@ environment variables between calls.
   no node `home-ops-03`.
 - The plugin sends no secret with a command. The sandbox reads its secrets
   from its own namespace (ADR 0008).
+- A timeout or a cancel ends the exec request on the client side only. The
+  environment runs each command as a process group with its own directory
+  in `/tmp/hermes-k8s`, and after a timeout or a cancel it runs a second exec
+  that stops the group.
