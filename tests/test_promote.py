@@ -110,3 +110,14 @@ def test_promote_needs_a_source_and_a_target_tag(env):
     e, _, _ = env
 
     assert promote(e, "ghcr.io/o/hermes", "sha-1").returncode != 0
+
+
+def test_promote_copies_and_verifies_each_target_tag(env):
+    e, log, _ = env
+
+    result = promote(e, "ghcr.io/o/hermes", "sha-1", "1.2.3", "1.2")
+
+    assert result.returncode == 0, result.stderr
+    copies = [x for x in log.read_text().splitlines() if "copy" in x]
+    assert len(copies) == 2
+    assert copies[1].endswith("docker://ghcr.io/o/hermes:1.2")

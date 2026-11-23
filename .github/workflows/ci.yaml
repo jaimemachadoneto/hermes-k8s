@@ -7,7 +7,7 @@ name: ci
 #
 # A push to main also scans both images and pushes them to ghcr.io as sha-<commit>, with a
 # build provenance attestation. The release of a tag promotes these images and builds nothing.
-# The job `publish` never runs for a pull request, and only this job can write packages.
+# The job `publish` never runs for a pull request. Only this job can write packages.
 on:
   pull_request:
   push:
@@ -65,7 +65,7 @@ jobs:
       - name: Tests
         run: nix shell --inputs-from . nixpkgs#uv nixpkgs#git -c uv run pytest
 
-  # The images are on ghcr.io only after the checks, the tests and the scan pass. A hosted
+  # The images are on ghcr.io only after the checks and the tests pass and the scan passes. A hosted
   # job has no disk that the next job can read, so this job builds the images again. The
   # Nix cache gives the dependencies. The images stay out of the cache.
   publish:
@@ -96,7 +96,7 @@ jobs:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
 
-      # Same cache and same filter as the job `check`.
+      # Use the same cache and the same filter as the job `check`.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: hermes-k8s
@@ -143,6 +143,16 @@ jobs:
             echo "- \`$sandbox_ref\`"
             echo "- \`$hermes_ref\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The attest action reads the registry login from the Docker configuration. The push
+      # script uses its own temporary login, so this step logs in again.
+      - name: Log in to the registry
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
 
       # The attestation goes to ghcr.io next to the image. It names the workflow and the commit
       # that built the digest.

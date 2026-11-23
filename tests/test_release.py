@@ -267,8 +267,7 @@ def test_release_jobs_run_on_hosted_runners_with_least_privilege():
 def test_release_does_not_build_or_install_nix():
     text = (ROOT / ".github" / "workflows" / "release.yaml").read_text()
 
-    for forbidden in ("nix build", "nix flake check", "install-nix-action", "cachix", "nix shell"):
-        assert forbidden not in text, forbidden
+    assert not re.search(r"\bnix\b|cachix|determinate", text, re.IGNORECASE)
     assert "trivy" not in text
     assert "publish-image.sh" not in text
 
@@ -551,3 +550,56 @@ def test_two_releases_never_run_at_the_same_time():
         "group": "release",
         "cancel-in-progress": False,
     }
+
+
+def test_release_checks_the_branch_and_the_ci_run_before_it_copies():
+    steps = workflow("release.yaml")["jobs"]["promote"]["steps"]
+    checkout = steps[0]
+    branch = next(s for s in steps if "merge-base --is-ancestor" in s.get("run", ""))
+    ci = next(s for s in steps if "gh run list" in s.get("run", ""))
+    copy = next(s for s in steps if "promote-image.sh" in s.get("run", ""))
+
+    assert checkout["with"]["fetch-depth"] == 0
+    assert steps.index(branch) < steps.index(ci) < steps.index(copy)
+    for step in (branch, ci):
+        assert "continue-on-error" not in step
+        assert "if" not in step
+    assert '"$runs" -lt 1' in ci["run"]
+
+
+def test_each_attestation_uses_the_digest_of_the_push_step():
+    steps = workflow("ci.yaml")["jobs"]["publish"]["steps"]
+    push = next(s for s in steps if "scripts/publish-image.sh" in s.get("run", ""))
+    attest = {
+        s["with"]["subject-name"]: s
+        for s in steps
+        if "attest-build-provenance" in s.get("uses", "")
+    }
+
+    assert push["id"] == "push"
+    assert attest["${{ env.SANDBOX_IMAGE }}"]["with"]["subject-digest"] == (
+        "${{ steps.push.outputs.sandbox-digest }}"
+    )
+    assert attest["${{ env.HERMES_IMAGE }}"]["with"]["subject-digest"] == (
+        "${{ steps.push.outputs.hermes-digest }}"
+    )
+    for step in attest.values():
+        assert "if" not in step
+        assert "continue-on-error" not in step
+
+
+def test_no_other_job_of_ci_can_write_packages_or_sign():
+    wf = workflow("ci.yaml")
+
+    for name, job in wf["jobs"].items():
+        if name != "publish":
+            assert not set(job.get("permissions", {})) & {"packages", "id-token", "attestations"}
+
+
+def test_the_job_logs_in_to_the_registry_before_the_attestations():
+    steps = workflow("ci.yaml")["jobs"]["publish"]["steps"]
+    login = next(i for i, s in enumerate(steps) if "docker login ghcr.io" in s.get("run", ""))
+    first = next(i for i, s in enumerate(steps) if "attest-build-provenance" in s.get("uses", ""))
+
+    assert login < first
+    assert "--password-stdin" in steps[login]["run"]

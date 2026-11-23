@@ -171,10 +171,40 @@ def test_the_api_lists_with_the_token_and_deletes_by_id(monkeypatch):
     assert all(c[2] == "Bearer tok" for c in calls)
 
 
-def test_the_api_url_of_a_user_owner():
-    assert prune.GithubApi("o", "p", "t", owner_type="users").base.startswith(
-        "https://api.github.com/users/o/packages/container/p/versions"
+def test_a_naive_date_or_a_non_string_tag_keeps_the_version():
+    naive = version(1, [SHA], 90)
+    naive["created_at"] = "2020-01-01T00:00:00"
+
+    assert picked([naive, version(2, [None], 90), version(3, [1], 90)]) == []
+
+
+def test_a_failed_delete_stops_the_run():
+    class Failing(FakeApi):
+        def delete_version(self, id_):
+            raise OSError("boom")
+
+    api = Failing([version(1, [SHA], 40), version(2, [SHA], 40)])
+
+    with pytest.raises(OSError):
+        prune.run(api, NOW)
+
+
+def test_main_uses_30_days_and_needs_a_token(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(prune, "GithubApi", lambda *args: args)
+    monkeypatch.setattr(
+        prune, "run", lambda api, now, days, dry_run: seen.update(d=days, r=dry_run)
     )
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert prune.main(["--owner", "o", "--package", "p"]) == 2
+    assert seen == {}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    assert prune.main(["--owner", "o", "--package", "p"]) == 0
+    assert seen == {"d": 30, "r": False}
+    prune.main(["--owner", "o", "--package", "p", "--dry-run"])
+    assert seen["r"] is True
 
 
 # --- the workflow ---------------------------------------------------------------------------
@@ -212,3 +242,23 @@ def test_the_retention_covers_both_packages_and_a_manual_run_is_a_dry_run_by_def
 
     assert "for package in hermes hermes-sandbox" in text
     assert wf["on"]["workflow_dispatch"]["inputs"]["dry-run"]["default"] is True
+
+
+def test_the_script_runs_on_the_python_of_the_hosted_runner():
+    # ubuntu-latest has Python 3.12. `except A, B:` without brackets needs 3.14.
+    source = (ROOT / "scripts" / "prune-versions.py").read_text()
+
+    assert not re.search(r"^\s*except [^(:\n]*,", source, re.MULTILINE)
+
+
+def test_the_dry_run_flag_reaches_the_script():
+    wf = workflow()
+    job = wf["jobs"]["prune"]
+    step = next(s for s in job["steps"] if "prune-versions.py" in s.get("run", ""))
+
+    assert "flag=(--dry-run)" in step["run"]
+    assert '"${flag[@]}"' in step["run"]
+    assert job["env"]["DRY_RUN"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || false }}"
+    )
+    assert "continue-on-error" not in step

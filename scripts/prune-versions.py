@@ -5,7 +5,7 @@ CI pushes each image of `main` as `sha-<commit>`. The release adds the tag `X.Y.
 same version. This script deletes a version only when all of these are true:
 
 - the version has at least one tag, and each tag has the form `sha-<40 hex digits>`;
-- the version is older than the age limit (30 days by default).
+- the version is older than the age limit (DEFAULT_DAYS, 30 days).
 
 A version with a release tag, any other tag or no tag stays. An untagged version can be a
 platform image or an attestation of another version, so it stays.
@@ -24,23 +24,28 @@ import urllib.request
 
 COMMIT_TAG = re.compile(r"sha-[0-9a-f]{40}")
 API = "https://api.github.com"
+DEFAULT_DAYS = 30
 
 
-def select_deletable(versions, now, days=30):
+def select_deletable(versions, now, days=DEFAULT_DAYS):
     """Return the versions that the retention rule allows us to delete."""
     if days < 1:
         raise ValueError("the age limit must be at least one day")
     limit = dt.timedelta(days=days)
     chosen = []
     for item in versions:
-        try:
-            tags = item["metadata"]["container"]["tags"]
-            created = dt.datetime.fromisoformat(item["created_at"])
-        except KeyError, TypeError, ValueError:
-            continue  # Unknown data is never a reason to delete.
-        if created.tzinfo is None or not tags:
+        # Unknown data is never a reason to delete.
+        container = (item.get("metadata") or {}).get("container") or {}
+        tags = container.get("tags")
+        if not isinstance(tags, list) or not tags:
             continue
         if not all(isinstance(t, str) and COMMIT_TAG.fullmatch(t) for t in tags):
+            continue
+        try:
+            created = dt.datetime.fromisoformat(str(item.get("created_at")))
+        except ValueError:
+            continue
+        if created.tzinfo is None:
             continue
         if now - created > limit:
             chosen.append(item)
@@ -48,10 +53,10 @@ def select_deletable(versions, now, days=30):
 
 
 class GithubApi:
-    """The versions of one container package."""
+    """The versions of one container package of an organization."""
 
-    def __init__(self, owner, package, token, owner_type="orgs"):
-        self.base = f"{API}/{owner_type}/{owner}/packages/container/{package}/versions"
+    def __init__(self, owner, package, token):
+        self.base = f"{API}/orgs/{owner}/packages/container/{package}/versions"
         self.token = token
 
     def _request(self, url, method="GET"):
@@ -82,7 +87,7 @@ class GithubApi:
             pass
 
 
-def run(api, now, days=30, dry_run=False):
+def run(api, now, days=DEFAULT_DAYS, dry_run=False):
     """Delete the selected versions. Return how many versions were selected."""
     chosen = select_deletable(api.list_versions(), now, days)
     for item in chosen:
@@ -97,15 +102,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--owner", required=True)
     parser.add_argument("--package", required=True)
-    parser.add_argument("--owner-type", choices=["orgs", "users"], default="orgs")
-    parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--days", type=int, default=DEFAULT_DAYS)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         print("prune-versions: set GITHUB_TOKEN", file=sys.stderr)
         return 2
-    api = GithubApi(args.owner, args.package, token, args.owner_type)
+    api = GithubApi(args.owner, args.package, token)
     count = run(api, dt.datetime.now(dt.UTC), args.days, args.dry_run)
     print(f"{args.package}: {count} version(s) selected")
     return 0

@@ -59,11 +59,11 @@ jobs:
             --commit "$GITHUB_SHA" --branch main --event push --status success \
             --json databaseId --jq 'length')
           if [ "$runs" -lt 1 ]; then
-            echo "::error::No successful run of ci.yaml on main for commit $GITHUB_SHA. Wait for CI on main, or run it again, then run this release again."
+            echo "::error::No successful run of ci.yaml on main for commit $GITHUB_SHA. Wait for CI on main to pass. Then run the release again."
             exit 1
           fi
 
-      # skopeo is on the hosted runner. The step fails if a new image of the runner drops it.
+      # skopeo is on the hosted runner. The step fails if a new image of the runner does not have it.
       - name: Copy the images to the release tag
         id: copy
         env:
