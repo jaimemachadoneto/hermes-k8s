@@ -35,6 +35,8 @@ does not delete a Nix base that has no digest label.
   it, Nix does not know the paths of the copy and downloads them again.
 - The Job has the image digest in `nix-base.yaml`, not in the HelmRelease. The digest of the Job must be
   the digest in the HelmRelease of Hermes, or the plugin finds no Nix base for its image.
+  The release workflow sets both in one deploy PR (`scripts/set-image-refs.py` with
+  `--nix-base-file`). It fails when `nix-base.yaml` has no sandbox image line.
 - The Nix base must fit in 20Gi, the maximum size of a sandbox volume in the admission policy.
 - Flux replaces the Job when the image changes (`kustomize.toolkit.fluxcd.io/force`), and
   the CronJob runs it each week.

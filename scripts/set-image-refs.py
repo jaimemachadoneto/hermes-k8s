@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Set the two image references of the Hermes HelmRelease in home-ops.
+"""Set the image references of Hermes in home-ops.
 
-Only text lines change, so the diff of the PR shows two lines. A reference without
-a digest is refused: the admission policy of the sandbox refuses it too.
+The HelmRelease gets the Hermes tag and the sandbox image. With --nix-base-file, each sandbox
+image of the Nix base Job gets the same sandbox reference. The plugin finds a Nix base only
+when the two digests are equal. Only text lines change. The diff of the PR shows only these
+lines. The script refuses a reference without a digest. The admission policy of the sandbox
+refuses it too. The script changes no file when a check fails.
 """
 
 import argparse
@@ -28,6 +31,7 @@ def main() -> None:
     parser.add_argument("file", type=Path)
     parser.add_argument("--hermes-tag", required=True, help="TAG@sha256:DIGEST")
     parser.add_argument("--sandbox-ref", required=True, help=f"{SANDBOX}:TAG@sha256:DIGEST")
+    parser.add_argument("--nix-base-file", type=Path, help="nix-base.yaml of the sandbox tenant")
     args = parser.parse_args()
 
     if not re.fullmatch(f"{TAG}@{DIGEST}", args.hermes_tag):
@@ -48,7 +52,33 @@ def main() -> None:
         lambda m: m.group(1) + args.sandbox_ref,
         "HERMES_K8S_SANDBOX_IMAGE",
     )
+
+    nix_base = None
+    if args.nix_base_file:
+        # Any form of the sandbox image is replaced, so an old line with no digest stays out.
+        # The `image:` lines of other images (the `snapshot` container) never match.
+        nix_base, count = re.subn(
+            rf"^([ \t-]*image: ){re.escape(SANDBOX)}(?=[:@\s]|$)\S*",
+            lambda m: m.group(1) + args.sandbox_ref,
+            args.nix_base_file.read_text(),
+            flags=re.MULTILINE,
+        )
+        if count == 0:
+            sys.exit(f"set-image-refs: no sandbox image line in {args.nix_base_file}")
+        # A line in a form that the pattern skips (a quoted value) would keep the old digest.
+        named = len(
+            re.findall(
+                rf"^.*\bimage:.*{re.escape(SANDBOX)}", args.nix_base_file.read_text(), re.MULTILINE
+            )
+        )
+        if named != count:
+            sys.exit(
+                f"set-image-refs: {named - count} sandbox image line(s) in {args.nix_base_file} not replaced"
+            )
+
     args.file.write_text(text)
+    if nix_base is not None:
+        args.nix_base_file.write_text(nix_base)
 
 
 if __name__ == "__main__":

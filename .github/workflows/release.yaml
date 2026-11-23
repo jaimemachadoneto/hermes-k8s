@@ -5,9 +5,10 @@ name: release
 # A tag that GITHUB_TOKEN pushes starts no other workflow, so the same run goes on.
 # This workflow builds nothing. CI on main built, scanned and pushed the images as
 # sha-<commit>. The job `promote` finds the green CI run of the commit of the tag. Then it
-# adds the tag X.Y.Z to the same images, with the same digests. The job `gitops` opens a PR
-# in home-ops that sets the new references with their digests. Flux applies the PR after the
-# merge.
+# adds the tag X.Y.Z to the same images, with the same digests. The job `gitops` opens one PR
+# in home-ops. The PR changes two files: the HelmRelease of Hermes and the base Job of
+# the sandbox volume (nix-base.yaml). Both get the new references with their digests. The
+# sandbox digest is the same in both. Flux applies the PR after the merge.
 #
 # The secret MY_PAT is a token that can push a branch to home-ops and open a
 # PR there. The other projects use the same secret.
@@ -34,6 +35,7 @@ env:
   HERMES_IMAGE: ghcr.io/jaimemachadoneto/hermes
   SANDBOX_IMAGE: ghcr.io/jaimemachadoneto/hermes-sandbox
   GITOPS_FILE: kubernetes/apps/ai/hermes/app/helmrelease.yaml
+  NIX_BASE_FILE: kubernetes/apps/hermes-sandbox/sandbox-tenant/app/nix-base.yaml
 
 jobs:
   # Only the button runs this job. It tags the commit of main that the run started on.
@@ -161,7 +163,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/set-image-refs.py "gitops/$GITOPS_FILE" \
-            --hermes-tag "$HERMES_TAG" --sandbox-ref "$SANDBOX_REF"
+            --hermes-tag "$HERMES_TAG" --sandbox-ref "$SANDBOX_REF" \
+            --nix-base-file "gitops/$NIX_BASE_FILE"
           git -C gitops --no-pager diff
 
       - name: Open the deploy PR
@@ -174,7 +177,10 @@ jobs:
           commit-message: deploy ${{ github.event.repository.name }} ${{ needs.promote.outputs.version }}
           title: deploy ${{ github.event.repository.name }} ${{ needs.promote.outputs.version }}
           body: |
-            Set the Hermes image and the sandbox image (`HERMES_K8S_SANDBOX_IMAGE`) in `${{ env.GITOPS_FILE }}`. Each reference has its digest.
+            This PR changes two files. Each reference has its digest.
+
+            - `${{ env.GITOPS_FILE }}`: the Hermes image and the sandbox image (`HERMES_K8S_SANDBOX_IMAGE`).
+            - `${{ env.NIX_BASE_FILE }}`: the sandbox image in the Job that makes the base volume. It must equal `HERMES_K8S_SANDBOX_IMAGE`, or the plugin finds no base.
 
             - Hermes: `${{ env.HERMES_TAG }}`
             - Sandbox: `${{ env.SANDBOX_REF }}`
