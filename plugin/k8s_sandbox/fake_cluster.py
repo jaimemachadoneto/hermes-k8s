@@ -9,6 +9,7 @@ the volume is `data-<sandbox name>`.
 from __future__ import annotations
 
 import os
+import select
 import signal
 import subprocess
 import threading
@@ -166,16 +167,25 @@ class FakeCluster:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        if stdin is not None:
+            threading.Thread(target=_feed, args=(proc, stdin), daemon=True).start()
         deadline = time.monotonic() + timeout
-        pending_input = stdin
         chunks: list[bytes] = []
+        assert proc.stdout is not None
+        fd = proc.stdout.fileno()
         while True:
-            try:
-                out, _ = proc.communicate(input=pending_input, timeout=_POLL_SECONDS)
-                chunks.append(out or b"")
+            if select.select([fd], [], [], _POLL_SECONDS)[0]:
+                data = os.read(fd, 65536)
+                if data:
+                    chunks.append(data)
+                    continue
+                proc.wait()
                 return ExecResult(_decode(chunks), proc.returncode)
-            except subprocess.TimeoutExpired:
-                pending_input = None  # communicate() keeps the input it already took
+            # A real exec call ends when the command exits, also when a background job still
+            # holds the pipe. Wait for EOF and a job such as `sleep 60 &` blocks the call until
+            # the timeout, and the kill of the group then stops the job.
+            if proc.poll() is not None:
+                return ExecResult(_decode(chunks), proc.returncode)
             if cancel.cancelled:
                 return ExecResult(_decode(chunks) + _kill(proc), 130)
             if time.monotonic() >= deadline:
@@ -206,6 +216,16 @@ class FakeCluster:
 
     def delete_nix_base(self, name: str) -> None:
         self.nix_bases = [b for b in self.nix_bases if b.name != name]
+
+
+def _feed(proc: subprocess.Popen, data: bytes) -> None:
+    """Send the input from a thread, so a large input cannot block the read of the output."""
+    assert proc.stdin is not None
+    try:
+        proc.stdin.write(data)
+        proc.stdin.close()
+    except OSError:
+        pass
 
 
 def _kill(proc: subprocess.Popen) -> str:
