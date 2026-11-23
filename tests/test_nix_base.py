@@ -69,6 +69,12 @@ def test_the_clean_up_keeps_the_bases_of_other_images_while_the_current_image_ha
     assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
 
 
+def test_the_clean_up_keeps_a_not_ready_base_of_another_image_while_the_current_image_has_none():
+    bases = [base("b-failed", OTHER, 2, ready=False), base("a-building", IMAGE, 0.1, ready=False)]
+
+    assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
+
+
 def test_the_clean_up_never_touches_a_base_without_digest_label():
     bases = [
         base("a0", IMAGE, 1),
@@ -91,7 +97,7 @@ def test_the_clean_up_keeps_a_ready_base_for_an_hour_even_when_it_is_not_among_t
     assert nix_bases_to_delete(bases, IMAGE, now=NOW) == []
 
 
-def test_the_clean_up_keeps_the_only_nix_base_of_the_current_image_when_it_is_old():
+def test_the_clean_up_deletes_the_bases_of_other_images_and_keeps_the_only_old_base_of_the_current_image():
     bases = [base("current", IMAGE, 90), base("n0", OTHER, 1), base("n1", OTHER, 2)]
 
     assert sorted(nix_bases_to_delete(bases, IMAGE, now=NOW)) == ["n0", "n1"]

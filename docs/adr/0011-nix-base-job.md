@@ -41,3 +41,6 @@ does not delete a Nix base that has no digest label.
 - A clone can hold a Nix base. If the CSI driver refuses to delete a snapshot that has a
   clone, the snapshot stays until the clone goes. The next start of an environment tries
   again.
+- The plugin cannot tell an older image from a newer image. If Hermes stays on the old image
+  after a new Nix base is ready, for example after a failed upgrade, the plugin deletes the new Nix
+  base. The next CronJob run makes it again.

@@ -81,7 +81,7 @@ def nix_bases_to_delete(
     if ready:
         doomed += [b.name for b in old_enough if b.ready and b.image_digest != current]
     # A sandbox that chose an older Nix base needs it until its volume exists.
-    doomed += [b.name for b in ready[KEEP_CURRENT:] if b in old_enough]
+    doomed += [b.name for b in ready[KEEP_CURRENT:] if now - b.created > GRACE_SECONDS]
     doomed += [b.name for b in old_enough if not b.ready and now - b.created > NOT_READY_SECONDS]
     return doomed
 
