@@ -174,6 +174,8 @@ class FakeCluster:
         finally:
             if proc.stdout is not None:
                 proc.stdout.close()
+            # Reap the process when it ends, so it leaves no zombie. Nothing kills it here.
+            threading.Thread(target=proc.wait, daemon=True).start()
 
     def set_operating_mode(self, name: str, mode: str) -> None:
         sandbox = self.sandboxes.get(name)

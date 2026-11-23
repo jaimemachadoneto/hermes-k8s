@@ -159,6 +159,15 @@ def test_a_command_that_ends_keeps_its_exit_code_and_removes_its_directory(make_
     assert env.execute(f"test -e {seen[0]} || echo gone")["output"].strip() == "gone"
 
 
+def test_a_command_that_a_signal_ends_adds_no_text_of_the_wrapper(make_env):
+    env = make_env()
+
+    result = env.execute("echo before; kill -KILL $$")
+
+    assert result["returncode"] == 137
+    assert result["output"].strip() == "before"
+
+
 def test_the_stop_keeps_the_directory_and_the_exports_of_later_commands(make_env):
     env = make_env()
     env.execute("mkdir -p kept && cd kept && export STAGE=one")

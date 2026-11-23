@@ -255,7 +255,7 @@ class KubernetesCluster:
             raise ClusterError(f"exec in sandbox {name}: {type(error).__name__}") from None
         finally:
             # Close the socket on each path. The remote process of a command that is cancelled
-            # or timed out is not killed here. It stops when the sandbox is suspended.
+            # or timed out is not killed here. The caller stops it with a second exec.
             socket.close()
 
     def set_operating_mode(self, name: str, mode: str) -> None:

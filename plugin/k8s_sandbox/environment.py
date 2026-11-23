@@ -34,7 +34,7 @@ mkdir -p "$d"
 if [ "$2" = 1 ]; then bash -l -c "$3" & else bash -c "$3" & fi
 pgid=$!
 echo "$pgid" > "$d/pgid"
-wait "$pgid"
+wait "$pgid" 2>/dev/null
 rc=$?
 rm -rf "$d"
 exit "$rc"
@@ -57,7 +57,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   kill -0 -- "-$pgid" 2>/dev/null || break
   sleep 0.1
 done
-kill -0 -- "-$pgid" 2>/dev/null && kill -KILL -- "-$pgid" 2>/dev/null
+if kill -0 -- "-$pgid" 2>/dev/null; then
+  kill -KILL -- "-$pgid" 2>/dev/null
+  sleep 0.2
+  if kill -0 -- "-$pgid" 2>/dev/null; then echo "group $pgid is still alive" >&2; exit 1; fi
+fi
 rm -rf "$d"
 """
 
@@ -157,13 +161,13 @@ class K8sSandboxEnvironment(BaseEnvironment):
                 logger.warning("exec in sandbox %s failed: %s", self.sandbox_name, error)
                 return f"sandbox error: {error}", 1
             if result.exit_code in (_TIMEOUT_EXIT_CODE, _CANCEL_EXIT_CODE):
-                self._stop_command(command_id)
+                self._stop_command(command_id, result.exit_code)
             self._use.mark()
             return result.output, result.exit_code
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel.cancel)
 
-    def _stop_command(self, command_id: str) -> None:
+    def _stop_command(self, command_id: str, exit_code: int) -> None:
         """Stop the command in the sandbox after a timeout or a cancel.
 
         The exec request ends on the client side, but the remote command continues. A second
@@ -171,14 +175,30 @@ class K8sSandboxEnvironment(BaseEnvironment):
         the stop then finds no directory and does nothing. The caller keeps its exit code.
         """
         try:
-            self._cluster.exec(
+            result = self._cluster.exec(
                 self.sandbox_name,
                 ["bash", "-c", STOP_SCRIPT, "k8s-stop", command_id],
                 timeout=STOP_TIMEOUT_SECONDS,
                 cancel=CancelToken(),
             )
         except ClusterError as error:
-            logger.warning("could not stop a command in sandbox %s: %s", self.sandbox_name, error)
+            logger.warning(
+                "could not stop command %s (exit %s) in sandbox %s: %s",
+                command_id,
+                exit_code,
+                self.sandbox_name,
+                error,
+            )
+            return
+        if result.exit_code != 0:
+            logger.warning(
+                "the stop of command %s (exit %s) in sandbox %s gave exit code %s: %s",
+                command_id,
+                exit_code,
+                self.sandbox_name,
+                result.exit_code,
+                result.output.strip(),
+            )
 
     def cleanup(self) -> None:
         """Suspend the sandbox. Its volume stays for the next environment of the task.
