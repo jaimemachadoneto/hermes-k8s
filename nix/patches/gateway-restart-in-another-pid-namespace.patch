@@ -197,7 +197,7 @@
 +    assert "relaunched by its supervisor" in out
 +
 +
-+def test_interrupt_stops_live_work_now(restart_calls):
++def test_interrupt_forces_the_pause(restart_calls):
 +    _run_restart(interrupt=True)
 +    assert restart_calls["pause"] == [True], (
 +        "--interrupt (the Dashboard button) must force the pause"

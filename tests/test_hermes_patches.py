@@ -3,7 +3,7 @@
 The image build applies each patch in nix/patches/ to the source of hermes-agent. This test
 applies the same patch to a copy of the installed Hermes packages that the patch changes. It then
 runs the tests that the patch adds, with the copy first on the path. Thus `check` fails when a
-patch stops applying to the pinned Hermes, or when the patched behavior breaks.
+patch does not apply to the pinned Hermes, or when the patched behavior breaks.
 """
 
 import importlib.util
@@ -30,7 +30,7 @@ def _copy_installed_package(name: str, root: Path) -> None:
     spec = importlib.util.find_spec(name)
     assert spec is not None and spec.submodule_search_locations, f"Hermes has no package {name}"
     source = Path(next(iter(spec.submodule_search_locations)))
-    # The bytecode in the copy must not hide the patched source.
+    # Do not copy the bytecode: it can hide the patched source.
     shutil.copytree(source, root / name, ignore=shutil.ignore_patterns("__pycache__"))
 
 

@@ -85,7 +85,8 @@ pkgs.runCommand "hermes-image-check"
     lowest=$(printf '%s\n' ${minClaudeVersion} "$version" | sort -V | head -n1)
     [ "$lowest" = "${minClaudeVersion}" ] || fail "claude is $version, want at least ${minClaudeVersion}"
 
-    # ADR 0012: each copy of a patched file in the image has the patch, and one copy exists.
+    # ADR 0012: each copy of a patched file in the image must have the patch. At least one copy
+    # must exist.
     for entry in ${pkgs.lib.escapeShellArgs patchMarkers}; do
       file=''${entry%%:*}
       marker=''${entry#*:}

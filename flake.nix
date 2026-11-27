@@ -73,6 +73,7 @@
           # ADR 0012: each entry is "file in site-packages:text that only the patch adds".
           patchMarkers = [
             "hermes_cli/gateway_supervised_restart.py:def restart_foreign_supervised_gateway("
+            "hermes_cli/gateway.py:restart_foreign_supervised_gateway("
           ];
         };
       };
