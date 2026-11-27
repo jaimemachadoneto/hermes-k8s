@@ -9,7 +9,17 @@ import uuid
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 
-from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
+from .cluster import (
+    PROFILE_ANNOTATION,
+    RUNNING,
+    SUSPENDED,
+    TASK_ANNOTATION,
+    TASK_LABEL,
+    CancelToken,
+    Cluster,
+    ClusterError,
+    sandbox_name,
+)
 from .lifecycle import Clock, UseMarker
 from .nix_base import choose_nix_base
 from .sandbox_spec import DEFAULT_PROFILE
@@ -104,6 +114,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         self._ready_timeout = ready_timeout
         self.sandbox_name = sandbox_name(task_id, profile)
         self._extra_labels = extra_labels or {}
+        self._clock = clock
         self._use = UseMarker(cluster, self.sandbox_name, clock)
         self._open_sandbox(image, profile)
         if cwd == "~":
@@ -119,18 +130,24 @@ class K8sSandboxEnvironment(BaseEnvironment):
             self._cluster.create_sandbox(
                 self.sandbox_name,
                 image=image,
-                labels={"hermes-task": self.sandbox_name, **self._extra_labels},
+                labels={TASK_LABEL: self.sandbox_name, **self._extra_labels},
                 profile=profile,
                 nix_base=nix_base,
+                annotations={TASK_ANNOTATION: self._task_id, PROFILE_ANNOTATION: profile},
             )
             logger.info(
                 "Created sandbox %s with %s",
                 self.sandbox_name,
                 f"Nix base {nix_base}" if nix_base else "an empty volume",
             )
-        elif status.operating_mode == SUSPENDED:
-            self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
-            logger.info("Resumed sandbox %s", self.sandbox_name)
+        else:
+            # After `shutdownTime` the controller starts no pod, even in Running mode. The new
+            # last use moves `shutdownTime`, so it must come before the resume. A failure here
+            # stops the resume: without the mark, the wait for the pod could only time out.
+            self._cluster.mark_used(self.sandbox_name, self._clock())
+            if status.operating_mode == SUSPENDED:
+                self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
+                logger.info("Resumed sandbox %s", self.sandbox_name)
         self._cluster.wait_ready(self.sandbox_name, timeout=self._ready_timeout)
         self._use.mark(force=True)
 
@@ -204,7 +221,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         """Suspend the sandbox. Its volume stays for the next environment of the task.
 
         Hermes calls this at the end of a session, after the idle time, and at shutdown. It never
-        deletes the sandbox: ticket 14 adds a TTL that deletes a suspended sandbox.
+        deletes the sandbox. The reaper in `archive.py` deletes a sandbox after 7 days.
         """
         try:
             self._use.mark(force=True)

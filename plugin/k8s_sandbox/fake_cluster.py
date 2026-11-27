@@ -13,12 +13,16 @@ import select
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cluster import (
     RUNNING,
+    SANDBOX_TTL_SECONDS,
     SUSPENDED,
+    TASK_LABEL,
+    Archive,
     CancelToken,
     ClusterError,
     ExecResult,
@@ -48,6 +52,11 @@ class FakeSandbox:
     secret_mount_path: str = ""
     # The name of the Nix base that the volume was cloned from, or None for an empty volume.
     nix_base: str | None = None
+    annotations: dict[str, str] = field(default_factory=dict)
+    # The `shutdownTime` of the Sandbox (seconds since the epoch), or None.
+    shutdown_time: float | None = None
+    # The resourceVersion: each change of the object gives a new one.
+    version: int = 1
 
     @property
     def pod_name(self) -> str:
@@ -60,7 +69,13 @@ class FakeSandbox:
     def status(self) -> SandboxStatus:
         suspended = self.operating_mode == SUSPENDED
         return SandboxStatus(
-            self.name, self.operating_mode, self.ready and not suspended, suspended, self.last_used
+            self.name,
+            self.operating_mode,
+            self.ready and not suspended,
+            suspended,
+            self.last_used,
+            resource_version=str(self.version),
+            managed=TASK_LABEL in self.labels,
         )
 
 
@@ -78,7 +93,44 @@ class FakeCluster:
     # Each exec request that the cluster received: the argv and the stdin.
     exec_log: list[tuple[list[str], bytes | None]] = field(default_factory=list)
     nix_bases: list[NixBase] = field(default_factory=list)
+    archives: dict[str, Archive] = field(default_factory=dict)
+    # While it is False, no archive becomes ready.
+    archives_ready: bool = True
+    # The error that the archive of a sandbox raises, by the name of the sandbox.
+    archive_error: dict[str, ClusterError] = field(default_factory=dict)
+    # The error that the delete of an archive raises, by the name of the archive.
+    delete_archive_error: dict[str, ClusterError] = field(default_factory=dict)
+    # The error that `list_archives` raises, or None.
+    list_archives_error: ClusterError | None = None
+    # Functions that a test sets to change a sandbox at one step: they get the name.
+    before_get: Callable[[str], None] | None = None
+    during_archive: Callable[[str], None] | None = None
+    before_delete: Callable[[str], None] | None = None
+    # The archives, the deletes, the marks and the mode changes of the sandboxes, in order.
+    events: list[tuple[str, ...]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def add_sandbox(
+        self,
+        name: str,
+        *,
+        mode: str = RUNNING,
+        last_used: float | None = None,
+        managed: bool = True,
+    ) -> None:
+        """Add a sandbox with no files, as an earlier process (or another tool) left it."""
+        directory = self.root / name
+        directory.mkdir(parents=True, exist_ok=True)
+        labels = {TASK_LABEL: name} if managed else {}
+        self.sandboxes[name] = FakeSandbox(
+            name, "", labels, directory, operating_mode=mode, last_used=last_used
+        )
+
+    def add_archive(
+        self, name: str, *, sandbox: str, expires_at: float | None, ready: bool = True
+    ) -> None:
+        with self._lock:
+            self.archives[name] = Archive(name, sandbox, expires_at, ready)
 
     def create_sandbox(
         self,
@@ -88,9 +140,17 @@ class FakeCluster:
         labels: dict[str, str],
         profile: str = DEFAULT_PROFILE,
         nix_base: str | None = None,
+        annotations: dict[str, str] | None = None,
     ) -> None:
         # The real object decides which Secret the pod mounts.
-        body = build_sandbox(name, image=image, labels=labels, profile=profile, nix_base=nix_base)
+        body = build_sandbox(
+            name,
+            image=image,
+            labels=labels,
+            profile=profile,
+            nix_base=nix_base,
+            annotations=annotations,
+        )
         pod = body["spec"]["podTemplate"]["spec"]
         secret = next(
             v["secret"]["secretName"] for v in pod["volumes"] if v["name"] == SECRET_VOLUME
@@ -101,7 +161,8 @@ class FakeCluster:
             if name in self.sandboxes:
                 return
             directory = self.root / name
-            directory.mkdir(parents=True)
+            # A task that comes back after a delete gets the same name.
+            directory.mkdir(parents=True, exist_ok=True)
             # A login shell resets PATH. The image of a real sandbox puts its tools back
             # in its profile, so the fake does the same for the tools of the test process.
             (directory / ".bash_profile").write_text(f"export PATH={os.environ.get('PATH', '')}\n")
@@ -114,9 +175,12 @@ class FakeCluster:
                 secret_name=secret,
                 secret_mount_path=mount["mountPath"],
                 nix_base=nix_base,
+                annotations=dict(body["metadata"].get("annotations", {})),
             )
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
+        if self.before_get is not None:
+            self.before_get(name)
         sandbox = self.sandboxes.get(name)
         return sandbox.status() if sandbox else None
 
@@ -182,6 +246,8 @@ class FakeCluster:
         if sandbox is None:
             raise SandboxNotFound(name)
         sandbox.operating_mode = mode
+        sandbox.version += 1
+        self.events.append(("mode", name, mode))
 
     def list_sandboxes(self) -> list[SandboxStatus]:
         return [sandbox.status() for sandbox in list(self.sandboxes.values())]
@@ -192,16 +258,63 @@ class FakeCluster:
             if sandbox is None:
                 raise SandboxNotFound(name)
             sandbox.last_used = at
+            sandbox.shutdown_time = at + SANDBOX_TTL_SECONDS
+            sandbox.version += 1
+            self.events.append(("mark", name))
 
-    def delete_sandbox(self, name: str) -> None:
+    def delete_sandbox(self, name: str, *, resource_version: str | None = None) -> None:
+        if self.before_delete is not None:
+            self.before_delete(name)
         with self._lock:
+            sandbox = self.sandboxes.get(name)
+            if (
+                sandbox is not None
+                and resource_version is not None
+                and resource_version != str(sandbox.version)
+            ):
+                raise ClusterError(f"delete sandbox {name}: 409 the object has been modified")
             self.sandboxes.pop(name, None)
+            self.events.append(("delete", name))
 
     def list_nix_bases(self) -> list[NixBase]:
         return list(self.nix_bases)
 
     def delete_nix_base(self, name: str) -> None:
         self.nix_bases = [b for b in self.nix_bases if b.name != name]
+
+    def archive_sandbox(
+        self, name: str, *, last_used: float, expires_at: float, timeout: float
+    ) -> str:
+        if name in self.archive_error:
+            raise self.archive_error[name]
+        archive_name = f"archive-{name}-{int(last_used)}"
+        with self._lock:
+            archive = self.archives.get(archive_name)
+            if archive is None:
+                if name not in self.sandboxes:
+                    raise SandboxNotFound(name)
+                archive = Archive(archive_name, name, expires_at, False)
+                self.events.append(("archive", name))
+            if self.archives_ready:
+                archive = Archive(archive.name, archive.sandbox, archive.expires_at, True)
+            self.archives[archive_name] = archive
+        if self.during_archive is not None:
+            self.during_archive(name)
+        if not archive.ready:
+            raise ClusterError(f"the archive {archive_name} is not ready after {timeout} seconds")
+        return archive_name
+
+    def list_archives(self) -> list[Archive]:
+        if self.list_archives_error is not None:
+            raise self.list_archives_error
+        with self._lock:
+            return list(self.archives.values())
+
+    def delete_archive(self, name: str) -> None:
+        if name in self.delete_archive_error:
+            raise self.delete_archive_error[name]
+        with self._lock:
+            self.archives.pop(name, None)
 
 
 def _collect(proc: subprocess.Popen, timeout: float, cancel: CancelToken) -> ExecResult:

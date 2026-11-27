@@ -115,19 +115,27 @@ def build_sandbox(
     labels: dict[str, str],
     profile: str = DEFAULT_PROFILE,
     nix_base: str | None = None,
+    annotations: dict[str, str] | None = None,
 ) -> dict:
     """Return the Sandbox object. It names the Secret of the profile and holds no token.
 
     With `nix_base`, the volume is a clone of that VolumeSnapshot. Without it, the volume is empty.
+    The `annotations` go on the Sandbox only. The pod does not get them.
     """
     validate_image(image)
     secret = secret_name(profile)
+    metadata: dict = {"name": name, "namespace": NAMESPACE, "labels": dict(labels)}
+    if annotations:
+        metadata["annotations"] = dict(annotations)
     return {
         "apiVersion": API_VERSION,
         "kind": "Sandbox",
-        "metadata": {"name": name, "namespace": NAMESPACE, "labels": dict(labels)},
+        "metadata": metadata,
         "spec": {
             "operatingMode": "Running",
+            # At `shutdownTime` (set by each last use) the controller only deletes the pod. The
+            # plugin archives the volume before it deletes the Sandbox (ADR 0013).
+            "shutdownPolicy": "Retain",
             "podTemplate": {
                 "metadata": {"labels": dict(labels)},
                 "spec": {
