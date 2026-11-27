@@ -1,13 +1,15 @@
 # Reads the configuration and the files of the built Hermes image. The check
 # fails when a plugin is missing from the bundled directory, when `claude` is
-# older than the minimum, or when the user is not 10000. A wrong image never
-# reaches the registry.
+# older than the minimum, when the user is not 10000, or when a file of Hermes
+# in the image does not have its patch (ADR 0012). A wrong image never reaches
+# the registry.
 {
   pkgs,
   image,
   claude-code,
   minClaudeVersion,
   plugins,
+  patchMarkers,
 }:
 pkgs.runCommand "hermes-image-check"
   {
@@ -82,6 +84,19 @@ pkgs.runCommand "hermes-image-check"
     version=$(HOME=$TMPDIR ${claude-code}/bin/claude --version | awk '{print $1}')
     lowest=$(printf '%s\n' ${minClaudeVersion} "$version" | sort -V | head -n1)
     [ "$lowest" = "${minClaudeVersion}" ] || fail "claude is $version, want at least ${minClaudeVersion}"
+
+    # ADR 0012: each copy of a patched file in the image has the patch, and one copy exists.
+    for entry in ${pkgs.lib.escapeShellArgs patchMarkers}; do
+      file=''${entry%%:*}
+      marker=''${entry#*:}
+      found=0
+      for f in rootfs/nix/store/*/lib/python3*/site-packages/$file; do
+        [ -f "$f" ] || continue
+        found=1
+        grep -qF -- "$marker" "$f" || fail "''${f#rootfs} does not have its patch"
+      done
+      [ "$found" = 1 ] || fail "the image has no $file"
+    done
 
     [ "$failed" = 0 ] || exit 1
     touch $out

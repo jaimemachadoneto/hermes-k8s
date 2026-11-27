@@ -35,9 +35,11 @@
         inherit system;
         config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "claude-code" ];
       };
+      # ADR 0012: the default package of Hermes with the patches of nix/patches/.
+      hermes-patched = import ./nix/hermes-patched.nix { inherit hermes system; };
       hermes-image = import ./nix/hermes-image.nix {
         inherit pkgs;
-        hermes = hermes.packages.${system}.default;
+        hermes = hermes-patched;
         claude-code = pkgs-unfree.claude-code;
         subscription-plugin = hermes-official-plugins;
       };
@@ -67,6 +69,10 @@
             "security-guidance:security-guidance"
             "claude-subscription-directsdk:claude-subscription-directsdk-experimental"
             "k8s_sandbox:k8s_sandbox"
+          ];
+          # ADR 0012: each entry is "file in site-packages:text that only the patch adds".
+          patchMarkers = [
+            "hermes_cli/gateway_supervised_restart.py:def restart_foreign_supervised_gateway("
           ];
         };
       };

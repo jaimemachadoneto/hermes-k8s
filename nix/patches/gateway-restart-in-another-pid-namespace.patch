@@ -1,0 +1,245 @@
+--- a/hermes_cli/gateway.py
++++ b/hermes_cli/gateway.py
+@@ -5422,12 +5422,18 @@
+     from gateway.status import get_running_pid
+     from hermes_cli.gateway_supervised_restart import (
+         gateway_declares_external_supervisor, refuse_restart_of_service_managed_gateway,
+-        restart_externally_supervised_gateway, start_restart_replacement,
++        restart_externally_supervised_gateway, restart_foreign_supervised_gateway,
++        start_restart_replacement,
+     )
+     supervised_pid = get_running_pid()
+     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
+         restart_externally_supervised_gateway(supervised_pid)
+         return
++    # No PID here, but a supervised gateway in another PID namespace (a second container) can
++    # answer on the shared control socket: the fallback below would start a second gateway here.
++    if supervised_pid is None and restart_foreign_supervised_gateway(
++            force=bool(getattr(args, "interrupt", False))):
++        return
+     refuse_restart_of_service_managed_gateway(supervised_pid)
+ 
+     if stop_profile_gateway():
+--- a/hermes_cli/gateway_supervised_restart.py
++++ b/hermes_cli/gateway_supervised_restart.py
+@@ -18,6 +18,11 @@
+ # A custom KeepAlive supervisor keeps its own respawn interval (launchd's is ~once per 10s,
+ # per LAUNCHD_SUPERVISION_VERIFY_TIMEOUT); 15s matches _wait_for_launchd_service_pid's budget.
+ SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT = 15.0
++# A gateway in another PID namespace is usually a container: its supervisor (the kubelet, Docker's
++# restart policy) restarts the whole container after a back-off, and the gateway then boots before
++# its socket answers. That takes longer than a KeepAlive respawn.
++FOREIGN_REPLACEMENT_VERIFY_TIMEOUT = 120.0
++FOREIGN_REPLACEMENT_POLL_INTERVAL = 1.0
+ 
+ 
+ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> bool:
+@@ -106,6 +111,61 @@
+     )
+     sys.exit(1)
+ 
++
++def restart_foreign_supervised_gateway(force: bool = False, home: Path | None = None) -> bool:
++    """Restart a supervised gateway whose PID this process cannot see, through its control socket.
++
++    A gateway in another PID namespace (a second container of the same pod, with the Hermes home on
++    a shared volume) answers on the control socket, but ``get_running_pid`` cannot verify its PID,
++    so the manual fallback started a second gateway in this process (it cannot signal the real
++    one). When that gateway declares an external supervisor, ``pause-for-update`` makes it exit
++    back to the supervisor: the same hand-back as the SIGUSR1 path above. Success is a replacement
++    that answers ``identify`` with a new PID or start time, never the bare exit.
++
++    Returns False when no gateway answers, or when the gateway that answers has no supervisor to
++    start it again: the caller keeps its own path. Exits 1 when the pause is refused or no
++    replacement answers in time; it never starts a gateway here.
++    """
++    from gateway.control_socket import identify_gateway, launch_supervisor, pause_gateway_for_update
++    from gateway.status import _get_process_hermes_home
++    from hermes_cli.gateway import _print_lines
++
++    home = home or _get_process_hermes_home()
++    identity = identify_gateway(home)
++    if not identity or launch_supervisor(identity) in (None, "manual"):
++        return False
++    old = (identity.get("pid"), identity.get("start_time"))
++    print(f"→ Restarting supervised gateway (PID {old[0]} in another PID namespace) "
++          "through its control socket...")
++    ack = pause_gateway_for_update(home, force=force)
++    if not ack:
++        _print_lines(
++            "",
++            "✗ The gateway did not accept pause-for-update on its control socket.",
++            "  Not starting a gateway here: its supervisor owns it.",
++        )
++        sys.exit(1)
++
++    def _replacement() -> dict | None:
++        current = identify_gateway(home)
++        if current and (current.get("pid"), current.get("start_time")) != old:
++            return current
++        return None
++
++    budget = float(ack.get("drain_timeout") or 0.0) + FOREIGN_REPLACEMENT_VERIFY_TIMEOUT
++    replacement = poll_until(_replacement, budget, FOREIGN_REPLACEMENT_POLL_INTERVAL)
++    if replacement:
++        print()
++        print(f"✓ Gateway relaunched by its supervisor (PID {replacement.get('pid')})")
++        return True
++    _print_lines(
++        "",
++        f"✗ The new gateway did not answer on the control socket within {budget:.0f}s.",
++        "  Not starting a gateway here: check the supervisor of the gateway",
++        "  (for a container, its restart policy and its logs).",
++    )
++    sys.exit(1)
++
+ 
+ def refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
+     """Refuse the manual restart fallback when systemd owns the gateway under ANY unit name.
+--- /dev/null
++++ b/tests/hermes_cli/test_gateway_restart_foreign_pidns.py
+@@ -0,0 +1,144 @@
++"""``hermes gateway restart`` must reach a supervised gateway in another PID namespace.
++
++A gateway in a second container of the same pod (or any other PID namespace) shares the Hermes
++home and its control socket, but ``get_running_pid`` cannot see its PID. The restart then fell
++through to the manual stop + foreground ``run_gateway``: it started a second gateway in the
++caller's container (the dashboard container, which has none of the gateway's mounts) and the
++caller never exited. A gateway that runs with ``--external-supervisor`` answers ``identify`` with
++an external supervisor, so the restart asks it over the socket to exit for its supervisor
++(``pause-for-update``) and waits for the replacement to answer.
++"""
++
++from types import SimpleNamespace
++
++import pytest
++
++from gateway import status as gateway_status
++from hermes_cli import gateway as gw
++from hermes_cli import gateway_supervised_restart as supervised
++
++OLD = {
++    "pid": 7,
++    "start_time": 1000,
++    "supervisor": "external",
++    "launch_supervisor": "external",
++}
++NEW = {
++    "pid": 7,
++    "start_time": 2000,
++    "supervisor": "external",
++    "launch_supervisor": "external",
++}
++
++
++@pytest.fixture
++def restart_calls(monkeypatch):
++    """Drive ``_cmd_restart`` with no visible PID and a gateway that answers on the socket."""
++    calls = {
++        "pause": [],
++        "stopped": False,
++        "started": False,
++        "identities": [OLD, OLD, NEW],
++        "ack": {"pausing": True, "drain_timeout": 0.0},
++    }
++
++    def _identify(home, **k):
++        answers = calls["identities"]
++        return answers.pop(0) if len(answers) > 1 else answers[0]
++
++    def _pause(home, **k):
++        calls["pause"].append(k.get("force", False))
++        return calls["ack"]
++
++    monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
++    monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **k: None)
++    monkeypatch.setattr(
++        gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False
++    )
++    monkeypatch.setattr(gw, "_reap_unsupervised_gateway_orphans", lambda: None)
++    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
++    monkeypatch.setattr(gateway_status, "get_running_pid", lambda *a, **k: None)
++    monkeypatch.setattr("gateway.control_socket.identify_gateway", _identify)
++    monkeypatch.setattr("gateway.control_socket.pause_gateway_for_update", _pause)
++    monkeypatch.setattr(supervised, "FOREIGN_REPLACEMENT_VERIFY_TIMEOUT", 0.2)
++    monkeypatch.setattr(supervised, "FOREIGN_REPLACEMENT_POLL_INTERVAL", 0.01)
++    monkeypatch.setattr(
++        gw, "stop_profile_gateway", lambda: calls.__setitem__("stopped", True) or True
++    )
++    monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
++    monkeypatch.setattr(gw, "_wait_for_api_server_port_free", lambda *a, **k: None)
++    monkeypatch.setattr(gw, "_forget_host_gateway_probe", lambda *a, **k: None)
++    monkeypatch.setattr(
++        gw, "run_gateway", lambda **k: calls.__setitem__("started", True)
++    )
++    monkeypatch.setattr(
++        "hermes_cli.main_dashboard._get_systemd_service_for_pid", lambda pid: None
++    )
++    return calls
++
++
++def _run_restart(**flags):
++    gw._cmd_restart(SimpleNamespace(system=False, all=False, force=False, **flags))
++
++
++def test_restart_hands_a_foreign_supervised_gateway_back_through_the_socket(
++    restart_calls, capsys
++):
++    _run_restart()
++    assert restart_calls["pause"] == [False], (
++        "must ask the gateway to exit for its supervisor once"
++    )
++    assert not restart_calls["stopped"], "the caller cannot signal a PID it cannot see"
++    assert not restart_calls["started"], (
++        "a foreground run would start a second gateway in the caller"
++    )
++    out = capsys.readouterr().out
++    assert "relaunched by its supervisor" in out
++
++
++def test_interrupt_stops_live_work_now(restart_calls):
++    _run_restart(interrupt=True)
++    assert restart_calls["pause"] == [True], (
++        "--interrupt (the Dashboard button) must force the pause"
++    )
++
++
++def test_no_gateway_on_the_socket_keeps_the_manual_restart(restart_calls):
++    restart_calls["identities"] = [None]
++    _run_restart()
++    assert restart_calls["pause"] == []
++    assert restart_calls["stopped"] and restart_calls["started"], (
++        "nothing answers: start a gateway here"
++    )
++
++
++def test_a_manual_gateway_on_the_socket_keeps_the_manual_restart(restart_calls):
++    manual = {
++        "pid": 7,
++        "start_time": 1000,
++        "supervisor": "none",
++        "launch_supervisor": "manual",
++    }
++    restart_calls["identities"] = [manual]
++    _run_restart()
++    assert restart_calls["pause"] == [], (
++        "no supervisor would start the gateway again after it exits"
++    )
++    assert restart_calls["started"]
++
++
++def test_no_replacement_is_a_failure_and_starts_nothing(restart_calls, capsys):
++    restart_calls["identities"] = [OLD]
++    with pytest.raises(SystemExit) as exc:
++        _run_restart()
++    assert exc.value.code == 1
++    assert not restart_calls["stopped"] and not restart_calls["started"]
++    assert "did not answer" in capsys.readouterr().out
++
++
++def test_a_refused_pause_is_a_failure_and_starts_nothing(restart_calls):
++    restart_calls["ack"] = None
++    with pytest.raises(SystemExit) as exc:
++        _run_restart()
++    assert exc.value.code == 1
++    assert not restart_calls["stopped"] and not restart_calls["started"]
