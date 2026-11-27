@@ -9,7 +9,16 @@ import uuid
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 
-from .cluster import RUNNING, SUSPENDED, CancelToken, Cluster, ClusterError, sandbox_name
+from .cluster import (
+    PROFILE_ANNOTATION,
+    RUNNING,
+    SUSPENDED,
+    TASK_ANNOTATION,
+    CancelToken,
+    Cluster,
+    ClusterError,
+    sandbox_name,
+)
 from .lifecycle import Clock, UseMarker
 from .nix_base import choose_nix_base
 from .sandbox_spec import DEFAULT_PROFILE
@@ -122,6 +131,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
                 labels={"hermes-task": self.sandbox_name, **self._extra_labels},
                 profile=profile,
                 nix_base=nix_base,
+                annotations={TASK_ANNOTATION: self._task_id, PROFILE_ANNOTATION: profile},
             )
             logger.info(
                 "Created sandbox %s with %s",
@@ -204,7 +214,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         """Suspend the sandbox. Its volume stays for the next environment of the task.
 
         Hermes calls this at the end of a session, after the idle time, and at shutdown. It never
-        deletes the sandbox: ticket 14 adds a TTL that deletes a suspended sandbox.
+        deletes the sandbox: the reaper of `archive` deletes a sandbox that stays suspended too long.
         """
         try:
             self._use.mark(force=True)

@@ -24,6 +24,7 @@ from kubernetes.stream import stream
 from .cluster import (
     LAST_USED_ANNOTATION,
     SUSPENDED,
+    Archive,
     CancelToken,
     ClusterError,
     ExecResult,
@@ -45,6 +46,14 @@ SNAPSHOT_GROUP, SNAPSHOT_VERSION, SNAPSHOT_PLURAL = (
     "v1",
     "volumesnapshots",
 )
+# The class of the Nix bases too (the Nix base Job of home-ops).
+SNAPSHOT_CLASS = "csi-ceph-blockpool"
+# The labels of a sandbox archive. The kind label is the one of the Nix bases, so the two lists
+# never mix.
+ARCHIVE_KIND = "sandbox-archive"
+LABEL_SANDBOX = "hermes-k8s/sandbox"
+LABEL_EXPIRES = "hermes-k8s/expires"
+ARCHIVE_PREFIX = "archive-"
 _POLL_SECONDS = 1.0
 _EXEC_POLL_SECONDS = 0.1
 _QUOTA = re.compile(r"exceeded quota: ([\w.-]+)")
@@ -140,8 +149,16 @@ class KubernetesCluster:
         labels: dict[str, str],
         profile: str = DEFAULT_PROFILE,
         nix_base: str | None = None,
+        annotations: dict[str, str] | None = None,
     ) -> None:
-        body = build_sandbox(name, image=image, labels=labels, profile=profile, nix_base=nix_base)
+        body = build_sandbox(
+            name,
+            image=image,
+            labels=labels,
+            profile=profile,
+            nix_base=nix_base,
+            annotations=annotations,
+        )
         try:
             self._custom.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, PLURAL, body)
         except ApiException as error:
@@ -340,3 +357,88 @@ class KubernetesCluster:
         except ApiException as error:
             if error.status != 404:
                 raise _map(error, f"delete the Nix base {name}") from None
+
+    def archive_sandbox(self, name: str, *, expires_at: float, timeout: float) -> str:
+        archive = f"{ARCHIVE_PREFIX}{name}-{time.strftime('%Y%m%d%H%M%S', time.gmtime())}"
+        body = {
+            "apiVersion": f"{SNAPSHOT_GROUP}/{SNAPSHOT_VERSION}",
+            "kind": "VolumeSnapshot",
+            "metadata": {
+                "name": archive,
+                "namespace": NAMESPACE,
+                "labels": {
+                    LABEL_KIND: ARCHIVE_KIND,
+                    LABEL_SANDBOX: name,
+                    LABEL_EXPIRES: str(int(expires_at)),
+                },
+            },
+            "spec": {
+                "volumeSnapshotClassName": SNAPSHOT_CLASS,
+                "source": {"persistentVolumeClaimName": f"{VOLUME}-{name}"},
+            },
+        }
+        what = f"archive sandbox {name}"
+        try:
+            self._custom.create_namespaced_custom_object(
+                SNAPSHOT_GROUP, SNAPSHOT_VERSION, NAMESPACE, SNAPSHOT_PLURAL, body
+            )
+        except ApiException as error:
+            raise _map(error, what) from None
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"{what}: {type(error).__name__}") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                item = self._custom.get_namespaced_custom_object(
+                    SNAPSHOT_GROUP, SNAPSHOT_VERSION, NAMESPACE, SNAPSHOT_PLURAL, archive
+                )
+            except ApiException as error:
+                raise _map(error, what) from None
+            except _NETWORK_ERRORS as error:
+                raise ClusterError(f"{what}: {type(error).__name__}") from None
+            if (item.get("status") or {}).get("readyToUse"):
+                return archive
+            if time.monotonic() >= deadline:
+                raise ClusterError(
+                    f"the archive {archive} is not ready after {timeout:.0f} seconds"
+                )
+            time.sleep(self._poll)
+
+    def list_archives(self) -> list[Archive]:
+        try:
+            result = self._custom.list_namespaced_custom_object(
+                SNAPSHOT_GROUP,
+                SNAPSHOT_VERSION,
+                NAMESPACE,
+                SNAPSHOT_PLURAL,
+                label_selector=f"{LABEL_KIND}={ARCHIVE_KIND}",
+            )
+        except ApiException as error:
+            raise _map(error, "list the sandbox archives") from None
+        except _NETWORK_ERRORS as error:
+            raise ClusterError(f"list the sandbox archives: {type(error).__name__}") from None
+        archives = []
+        for item in result.get("items", []):
+            labels = item["metadata"].get("labels", {})
+            try:
+                expires_at: float | None = float(labels.get(LABEL_EXPIRES, ""))
+            except ValueError:
+                expires_at = None
+            archives.append(
+                Archive(
+                    name=item["metadata"]["name"],
+                    sandbox=labels.get(LABEL_SANDBOX, ""),
+                    expires_at=expires_at,
+                    ready=bool((item.get("status") or {}).get("readyToUse")),
+                )
+            )
+        return archives
+
+    def delete_archive(self, name: str) -> None:
+        try:
+            self._custom.delete_namespaced_custom_object(
+                SNAPSHOT_GROUP, SNAPSHOT_VERSION, NAMESPACE, SNAPSHOT_PLURAL, name
+            )
+        except ApiException as error:
+            if error.status != 404:
+                raise _map(error, f"delete the sandbox archive {name}") from None

@@ -13,12 +13,14 @@ import select
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cluster import (
     RUNNING,
     SUSPENDED,
+    Archive,
     CancelToken,
     ClusterError,
     ExecResult,
@@ -48,6 +50,7 @@ class FakeSandbox:
     secret_mount_path: str = ""
     # The name of the Nix base that the volume was cloned from, or None for an empty volume.
     nix_base: str | None = None
+    annotations: dict[str, str] = field(default_factory=dict)
 
     @property
     def pod_name(self) -> str:
@@ -78,7 +81,28 @@ class FakeCluster:
     # Each exec request that the cluster received: the argv and the stdin.
     exec_log: list[tuple[list[str], bytes | None]] = field(default_factory=list)
     nix_bases: list[NixBase] = field(default_factory=list)
+    archives: dict[str, Archive] = field(default_factory=dict)
+    # Set it to False to make each new archive stay not ready.
+    archives_ready: bool = True
+    # The error that the archive of a sandbox raises, by the name of the sandbox.
+    archive_error: dict[str, ClusterError] = field(default_factory=dict)
+    # The error that `list_archives` raises, or None.
+    list_archives_error: ClusterError | None = None
+    # A function that `get_sandbox` calls first with the name: a test changes the sandbox there.
+    before_get: Callable[[str], None] | None = None
+    # Each archive and each delete of a sandbox, in order.
+    events: list[tuple[str, str]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def add_sandbox(
+        self, name: str, *, mode: str = RUNNING, last_used: float | None = None
+    ) -> None:
+        """Add a sandbox with no files, as an earlier process left it."""
+        directory = self.root / name
+        directory.mkdir(parents=True)
+        self.sandboxes[name] = FakeSandbox(
+            name, "", {}, directory, operating_mode=mode, last_used=last_used
+        )
 
     def create_sandbox(
         self,
@@ -88,9 +112,17 @@ class FakeCluster:
         labels: dict[str, str],
         profile: str = DEFAULT_PROFILE,
         nix_base: str | None = None,
+        annotations: dict[str, str] | None = None,
     ) -> None:
         # The real object decides which Secret the pod mounts.
-        body = build_sandbox(name, image=image, labels=labels, profile=profile, nix_base=nix_base)
+        body = build_sandbox(
+            name,
+            image=image,
+            labels=labels,
+            profile=profile,
+            nix_base=nix_base,
+            annotations=annotations,
+        )
         pod = body["spec"]["podTemplate"]["spec"]
         secret = next(
             v["secret"]["secretName"] for v in pod["volumes"] if v["name"] == SECRET_VOLUME
@@ -114,9 +146,12 @@ class FakeCluster:
                 secret_name=secret,
                 secret_mount_path=mount["mountPath"],
                 nix_base=nix_base,
+                annotations=dict(body["metadata"].get("annotations", {})),
             )
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
+        if self.before_get is not None:
+            self.before_get(name)
         sandbox = self.sandboxes.get(name)
         return sandbox.status() if sandbox else None
 
@@ -196,12 +231,37 @@ class FakeCluster:
     def delete_sandbox(self, name: str) -> None:
         with self._lock:
             self.sandboxes.pop(name, None)
+            self.events.append(("delete", name))
 
     def list_nix_bases(self) -> list[NixBase]:
         return list(self.nix_bases)
 
     def delete_nix_base(self, name: str) -> None:
         self.nix_bases = [b for b in self.nix_bases if b.name != name]
+
+    def archive_sandbox(self, name: str, *, expires_at: float, timeout: float) -> str:
+        if name in self.archive_error:
+            raise self.archive_error[name]
+        if name not in self.sandboxes:
+            raise SandboxNotFound(name)
+        archive = Archive(
+            f"archive-{name}-{len(self.archives)}", name, expires_at, self.archives_ready
+        )
+        self.archives[archive.name] = archive
+        self.events.append(("archive", name))
+        if not archive.ready:
+            raise ClusterError(
+                f"the archive of sandbox {name} is not ready after {timeout} seconds"
+            )
+        return archive.name
+
+    def list_archives(self) -> list[Archive]:
+        if self.list_archives_error is not None:
+            raise self.list_archives_error
+        return list(self.archives.values())
+
+    def delete_archive(self, name: str) -> None:
+        self.archives.pop(name, None)
 
 
 def _collect(proc: subprocess.Popen, timeout: float, cancel: CancelToken) -> ExecResult:

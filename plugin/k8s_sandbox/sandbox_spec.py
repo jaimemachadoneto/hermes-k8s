@@ -115,17 +115,22 @@ def build_sandbox(
     labels: dict[str, str],
     profile: str = DEFAULT_PROFILE,
     nix_base: str | None = None,
+    annotations: dict[str, str] | None = None,
 ) -> dict:
     """Return the Sandbox object. It names the Secret of the profile and holds no token.
 
     With `nix_base`, the volume is a clone of that VolumeSnapshot. Without it, the volume is empty.
+    The `annotations` go on the Sandbox only. The pod does not get them.
     """
     validate_image(image)
     secret = secret_name(profile)
+    metadata: dict = {"name": name, "namespace": NAMESPACE, "labels": dict(labels)}
+    if annotations:
+        metadata["annotations"] = dict(annotations)
     return {
         "apiVersion": API_VERSION,
         "kind": "Sandbox",
-        "metadata": {"name": name, "namespace": NAMESPACE, "labels": dict(labels)},
+        "metadata": metadata,
         "spec": {
             "operatingMode": "Running",
             "podTemplate": {
