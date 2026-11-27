@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import Callable
@@ -23,7 +24,9 @@ from kubernetes.stream import stream
 
 from .cluster import (
     LAST_USED_ANNOTATION,
+    SANDBOX_TTL_SECONDS,
     SUSPENDED,
+    TASK_LABEL,
     Archive,
     CancelToken,
     ClusterError,
@@ -67,14 +70,23 @@ def _api_message(error: ApiException) -> str:
         return str(error.reason)
 
 
-def _quota_error(message: str) -> QuotaExceeded | None:
+def _quota_error(message: str, what: str) -> QuotaExceeded | None:
     match = _QUOTA.search(message)
     if match is None:
         return None
     return QuotaExceeded(
         f"the quota {match.group(1)} of the namespace {NAMESPACE} is full, "
-        f"so the cluster cannot start a sandbox: {message}"
+        f"so the cluster refuses to {what}: {message}"
     )
+
+
+def _volume_name(name: str) -> str:
+    """The PVC of a sandbox: the controller names it from the volume template and the Sandbox."""
+    return f"{VOLUME}-{name}"
+
+
+def _rfc3339(at: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
 
 
 # A dropped connection is a cluster failure too. The port promises a ClusterError.
@@ -83,7 +95,7 @@ _NETWORK_ERRORS = (OSError, urllib3.exceptions.HTTPError, websocket.WebSocketExc
 
 def _map(error: ApiException, what: str) -> ClusterError:
     message = _api_message(error)
-    quota = _quota_error(message) if error.status == 403 else None
+    quota = _quota_error(message, what) if error.status == 403 else None
     if quota is not None:
         return quota
     if error.status == 404:
@@ -186,12 +198,23 @@ class KubernetesCluster:
             c.get("type") == "Ready" and c.get("status") == "True"
             for c in item.get("status", {}).get("conditions", [])
         )
-        stamp = (item.get("metadata", {}).get("annotations") or {}).get(LAST_USED_ANNOTATION)
+        metadata = item.get("metadata", {})
+        stamp = (metadata.get("annotations") or {}).get(LAST_USED_ANNOTATION)
         try:
             last_used = float(stamp) if stamp is not None else None
         except ValueError:
             last_used = None
-        return SandboxStatus(name, mode, ready and not suspended, suspended, last_used)
+        if last_used is not None and not math.isfinite(last_used):
+            last_used = None
+        return SandboxStatus(
+            name,
+            mode,
+            ready and not suspended,
+            suspended,
+            last_used,
+            resource_version=metadata.get("resourceVersion"),
+            managed=TASK_LABEL in (metadata.get("labels") or {}),
+        )
 
     def get_sandbox(self, name: str) -> SandboxStatus | None:
         item = self._read(name)
@@ -219,7 +242,7 @@ class KubernetesCluster:
             if status.ready and self._pod_ready(name):
                 return status
             for condition in item.get("status", {}).get("conditions", []):
-                quota = _quota_error(str(condition.get("message", "")))
+                quota = _quota_error(str(condition.get("message", "")), f"start sandbox {name}")
                 if quota is not None:
                     raise quota
             if time.monotonic() >= deadline:
@@ -293,7 +316,10 @@ class KubernetesCluster:
         return [self._status(i["metadata"]["name"], i) for i in result.get("items", [])]
 
     def mark_used(self, name: str, at: float) -> None:
-        body = {"metadata": {"annotations": {LAST_USED_ANNOTATION: repr(at)}}}
+        body = {
+            "metadata": {"annotations": {LAST_USED_ANNOTATION: repr(at)}},
+            "spec": {"shutdownTime": _rfc3339(at + SANDBOX_TTL_SECONDS)},
+        }
         try:
             self._custom.patch_namespaced_custom_object(
                 GROUP, VERSION, NAMESPACE, PLURAL, name, body
@@ -303,17 +329,23 @@ class KubernetesCluster:
         except _NETWORK_ERRORS as error:
             raise ClusterError(f"mark the use of sandbox {name}: {type(error).__name__}") from None
 
-    def delete_sandbox(self, name: str) -> None:
+    def delete_sandbox(self, name: str, *, resource_version: str | None = None) -> None:
+        options = {}
+        if resource_version is not None:
+            options["body"] = client.V1DeleteOptions(
+                preconditions=client.V1Preconditions(resource_version=resource_version)
+            )
+        # A refused precondition raises before the second call, so the volume stays.
         for call, what in (
             (
                 lambda: self._custom.delete_namespaced_custom_object(
-                    GROUP, VERSION, NAMESPACE, PLURAL, name
+                    GROUP, VERSION, NAMESPACE, PLURAL, name, **options
                 ),
                 f"delete sandbox {name}",
             ),
             (
                 lambda: self._core.delete_namespaced_persistent_volume_claim(
-                    f"{VOLUME}-{name}", NAMESPACE
+                    _volume_name(name), NAMESPACE
                 ),
                 f"delete the volume of sandbox {name}",
             ),
@@ -358,8 +390,12 @@ class KubernetesCluster:
             if error.status != 404:
                 raise _map(error, f"delete the Nix base {name}") from None
 
-    def archive_sandbox(self, name: str, *, expires_at: float, timeout: float) -> str:
-        archive = f"{ARCHIVE_PREFIX}{name}-{time.strftime('%Y%m%d%H%M%S', time.gmtime())}"
+    def archive_sandbox(
+        self, name: str, *, last_used: float, expires_at: float, timeout: float
+    ) -> str:
+        # One name for one sandbox and one last use: a second reaper finds the same archive,
+        # and a later use of the sandbox gets a new one.
+        archive = f"{ARCHIVE_PREFIX}{name}-{int(last_used)}"
         body = {
             "apiVersion": f"{SNAPSHOT_GROUP}/{SNAPSHOT_VERSION}",
             "kind": "VolumeSnapshot",
@@ -374,7 +410,7 @@ class KubernetesCluster:
             },
             "spec": {
                 "volumeSnapshotClassName": SNAPSHOT_CLASS,
-                "source": {"persistentVolumeClaimName": f"{VOLUME}-{name}"},
+                "source": {"persistentVolumeClaimName": _volume_name(name)},
             },
         }
         what = f"archive sandbox {name}"
@@ -383,7 +419,9 @@ class KubernetesCluster:
                 SNAPSHOT_GROUP, SNAPSHOT_VERSION, NAMESPACE, SNAPSHOT_PLURAL, body
             )
         except ApiException as error:
-            raise _map(error, what) from None
+            # 409: the archive of this last use exists. Wait for it.
+            if error.status != 409:
+                raise _map(error, what) from None
         except _NETWORK_ERRORS as error:
             raise ClusterError(f"{what}: {type(error).__name__}") from None
         deadline = time.monotonic() + timeout
@@ -396,8 +434,16 @@ class KubernetesCluster:
                 raise _map(error, what) from None
             except _NETWORK_ERRORS as error:
                 raise ClusterError(f"{what}: {type(error).__name__}") from None
-            if (item.get("status") or {}).get("readyToUse"):
+            status = item.get("status") or {}
+            if status.get("readyToUse"):
                 return archive
+            failure = status.get("error")
+            if failure:
+                # A failed snapshot never becomes ready. Free its quota, so the next run can
+                # make it again.
+                self.delete_archive(archive)
+                message = failure.get("message") if isinstance(failure, dict) else failure
+                raise ClusterError(f"the archive {archive} failed: {message}")
             if time.monotonic() >= deadline:
                 raise ClusterError(
                     f"the archive {archive} is not ready after {timeout:.0f} seconds"
@@ -419,10 +465,15 @@ class KubernetesCluster:
             raise ClusterError(f"list the sandbox archives: {type(error).__name__}") from None
         archives = []
         for item in result.get("items", []):
+            # An archive in deletion is gone for the reaper.
+            if item["metadata"].get("deletionTimestamp"):
+                continue
             labels = item["metadata"].get("labels", {})
             try:
                 expires_at: float | None = float(labels.get(LABEL_EXPIRES, ""))
             except ValueError:
+                expires_at = None
+            if expires_at is not None and not math.isfinite(expires_at):
                 expires_at = None
             archives.append(
                 Archive(

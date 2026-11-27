@@ -133,6 +133,9 @@ def build_sandbox(
         "metadata": metadata,
         "spec": {
             "operatingMode": "Running",
+            # At `shutdownTime` (set by each last use) the controller only stops the pod. The
+            # plugin archives the volume before it deletes the Sandbox (ADR 0013).
+            "shutdownPolicy": "Retain",
             "podTemplate": {
                 "metadata": {"labels": dict(labels)},
                 "spec": {

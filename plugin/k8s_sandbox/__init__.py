@@ -57,6 +57,7 @@ def _maintain(stop: threading.Event, interval: float = REAP_INTERVAL_SECONDS) ->
 
 def _start_sweeps() -> None:
     _suspend_left_running()
+    # Nothing sets this event: the thread runs while Hermes runs. The tests set it to stop.
     _maintain(threading.Event())
 
 

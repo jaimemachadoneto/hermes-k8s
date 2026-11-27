@@ -148,3 +148,31 @@ def test_a_failed_stop_exec_keeps_the_timeout_exit_code(make_env, cluster):
 
     assert result["returncode"] == 124
     assert "start" in result["output"]
+
+
+def test_each_new_sandbox_records_its_task_and_profile(make_env, cluster, monkeypatch):
+    env = make_env("session:abc")
+    monkeypatch.setattr("hermes_cli.profiles.current_profile_name", lambda default=None: "dev")
+    other = make_env("session:abc")
+
+    assert cluster.sandboxes[env.sandbox_name].annotations == {
+        "hermes-k8s/task": "session:abc",
+        "hermes-k8s/profile": "default",
+    }
+    assert cluster.sandboxes[other.sandbox_name].annotations["hermes-k8s/profile"] == "dev"
+
+
+def test_a_resume_moves_the_end_of_life_before_it_starts_the_pod(make_env, cluster, clock):
+    # After `shutdownTime`, the controller starts no pod, also in Running mode. So the new
+    # last use must reach the Sandbox before the mode changes.
+    env = make_env("a")
+    env.cleanup()
+    clock.advance(8 * 24 * 3600)
+    cluster.events.clear()
+
+    make_env("a")
+
+    marks = [i for i, e in enumerate(cluster.events) if e == ("mark", env.sandbox_name)]
+    running = cluster.events.index(("mode", env.sandbox_name, "Running"))
+    assert marks and marks[0] < running
+    assert cluster.sandboxes[env.sandbox_name].shutdown_time == clock() + 7 * 24 * 3600

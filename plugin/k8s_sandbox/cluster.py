@@ -19,10 +19,16 @@ SUSPENDED = "Suspended"
 # The annotation that holds the last-use time of a sandbox (seconds since the epoch). The idle
 # sweep and the TTL of a suspended sandbox read it.
 LAST_USED_ANNOTATION = "hermes-k8s/last-used"
-# The annotations that tell a person which Hermes task and profile made a sandbox. The name of a
-# sandbox is a hash, so without them a sandbox cannot be traced back.
+# The annotations that tell a person which Hermes session and profile made a sandbox. The name of
+# a sandbox is a hash, so without them a sandbox cannot be traced back. The value of the task
+# annotation is the task id that Hermes gives the plugin.
 TASK_ANNOTATION = "hermes-k8s/task"
 PROFILE_ANNOTATION = "hermes-k8s/profile"
+# The label that the plugin puts on each Sandbox that it makes. The reaper acts only on these.
+TASK_LABEL = "hermes-task"
+# A sandbox expires 7 days after its last use (ticket 14, ADR 0013). Each last use moves the
+# `shutdownTime` of the Sandbox to this time after it.
+SANDBOX_TTL_SECONDS = 7 * 24 * 3600.0
 
 # A Kubernetes object name is at most 63 characters (a DNS label).
 _NAME_PREFIX = "hermes-"
@@ -66,6 +72,10 @@ class SandboxStatus:
     ready: bool
     suspended: bool
     last_used: float | None = None
+    # The resourceVersion of the object. A delete with it fails when the object changed.
+    resource_version: str | None = None
+    # True when the plugin made the Sandbox (it has the label TASK_LABEL).
+    managed: bool = True
 
 
 @dataclass(frozen=True)
@@ -173,11 +183,19 @@ class Cluster(Protocol):
         ...
 
     def mark_used(self, name: str, at: float) -> None:
-        """Record `at` (seconds since the epoch) as the last-use time of the Sandbox."""
+        """Record `at` (seconds since the epoch) as the last-use time of the Sandbox.
+
+        Also set its `shutdownTime` to `at` plus SANDBOX_TTL_SECONDS. After that time the
+        controller deletes the pod and starts no new one, so call this before a resume.
+        """
         ...
 
-    def delete_sandbox(self, name: str) -> None:
-        """Delete the Sandbox and its volume. Do nothing when it does not exist."""
+    def delete_sandbox(self, name: str, *, resource_version: str | None = None) -> None:
+        """Delete the Sandbox and its volume. Do nothing when it does not exist.
+
+        With `resource_version`, the API server refuses the delete when the Sandbox changed
+        since that version. The volume then stays, and a `ClusterError` is raised.
+        """
         ...
 
     def list_nix_bases(self) -> list[NixBase]:
@@ -188,11 +206,15 @@ class Cluster(Protocol):
         """Delete the Nix base. Do nothing when it does not exist."""
         ...
 
-    def archive_sandbox(self, name: str, *, expires_at: float, timeout: float) -> str:
+    def archive_sandbox(
+        self, name: str, *, last_used: float, expires_at: float, timeout: float
+    ) -> str:
         """Make a sandbox archive of the volume of the Sandbox and return its name.
 
+        The name of the archive comes from the sandbox and `last_used`. When that archive exists,
+        wait for it and make no second one. A later use of the sandbox gives a new archive.
         Return only when the archive is ready to use. Raise `ClusterError` when it is not ready
-        after `timeout` seconds, and `QuotaExceeded` when the quota refuses it.
+        after `timeout` seconds or when it failed, and `QuotaExceeded` when the quota refuses it.
         """
         ...
 

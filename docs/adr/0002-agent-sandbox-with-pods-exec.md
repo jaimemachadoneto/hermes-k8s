@@ -3,8 +3,8 @@
 The plugin makes one `Sandbox` (`agents.x-k8s.io/v1beta1`, the core
 controller that home-ops installs) for each session. The controller owns
 the life of the pod and the volume: `operatingMode: Suspended` when the
-sandbox is idle, and `shutdownTime` for the end of its life (replaced by
-ADR 0013: the plugin archives and deletes an expired sandbox). The plugin
+sandbox is idle, and `shutdownTime` for the end of its life. ADR 0013 tells
+how the plugin archives and deletes an expired sandbox. The plugin
 runs each command with `pods/exec` on the pod of the Sandbox, as one
 `bash -c` call. The Hermes base class keeps the working directory and the
 environment variables between calls.

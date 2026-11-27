@@ -138,9 +138,13 @@ class K8sSandboxEnvironment(BaseEnvironment):
                 self.sandbox_name,
                 f"Nix base {nix_base}" if nix_base else "an empty volume",
             )
-        elif status.operating_mode == SUSPENDED:
-            self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
-            logger.info("Resumed sandbox %s", self.sandbox_name)
+        else:
+            # After `shutdownTime` the controller starts no pod, also in Running mode. The new
+            # last use moves `shutdownTime`, so it must come before the resume.
+            self._use.mark(force=True)
+            if status.operating_mode == SUSPENDED:
+                self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
+                logger.info("Resumed sandbox %s", self.sandbox_name)
         self._cluster.wait_ready(self.sandbox_name, timeout=self._ready_timeout)
         self._use.mark(force=True)
 
@@ -214,7 +218,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         """Suspend the sandbox. Its volume stays for the next environment of the task.
 
         Hermes calls this at the end of a session, after the idle time, and at shutdown. It never
-        deletes the sandbox: the reaper of `archive` deletes a sandbox that stays suspended too long.
+        deletes the sandbox. The reaper in `archive.py` deletes a sandbox after 7 days.
         """
         try:
             self._use.mark(force=True)

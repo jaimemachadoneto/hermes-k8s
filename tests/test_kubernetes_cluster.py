@@ -571,15 +571,19 @@ def test_list_gives_one_status_for_each_sandbox(make, custom):
     assert statuses == {"hermes-a": "Running", "hermes-b": "Suspended"}
 
 
-def test_mark_used_patches_only_the_annotation(make, custom):
+def test_mark_used_patches_the_annotation_and_the_end_of_life(make, custom):
     custom.objects["hermes-a"] = sandbox_object()
 
-    make()[0].mark_used("hermes-a", 99.5)
+    make()[0].mark_used("hermes-a", 1_800_000_000.5)
 
+    # The controller stops the pod 7 days after the last use (ADR 0013).
     assert custom.calls[-1] == (
         "patch",
         "hermes-a",
-        {"metadata": {"annotations": {"hermes-k8s/last-used": "99.5"}}},
+        {
+            "metadata": {"annotations": {"hermes-k8s/last-used": "1800000000.5"}},
+            "spec": {"shutdownTime": "2027-01-22T08:00:00Z"},
+        },
     )
 
 
@@ -595,10 +599,12 @@ def test_list_and_mark_raise_cluster_error_on_a_failure(make, custom):
         make()[0].list_sandboxes()
 
 
-# --- the sandbox archive (ticket 14) ----------------------------------------------------------
+# --- the end of life and the sandbox archive (ticket 14, ADR 0013) -----------------------------
 
 
-def test_create_puts_the_annotations_on_the_sandbox_only(make, custom):
+def test_create_keeps_the_sandbox_after_its_end_of_life_and_annotates_only_the_sandbox(
+    make, custom
+):
     cluster, _ = make()
     cluster.create_sandbox(
         "hermes-a",
@@ -607,6 +613,8 @@ def test_create_puts_the_annotations_on_the_sandbox_only(make, custom):
         annotations={"hermes-k8s/task": "session:abc", "hermes-k8s/profile": "default"},
     )
     body = custom.objects["hermes-a"]
+    # The plugin archives the volume before a delete, so the controller must not delete it.
+    assert body["spec"]["shutdownPolicy"] == "Retain"
     assert body["metadata"]["annotations"] == {
         "hermes-k8s/task": "session:abc",
         "hermes-k8s/profile": "default",
@@ -615,24 +623,69 @@ def test_create_puts_the_annotations_on_the_sandbox_only(make, custom):
     assert "annotations" not in body["spec"]["podTemplate"]["metadata"]
 
 
-def test_archive_snapshots_the_volume_of_the_sandbox_and_waits_until_it_is_ready(make, custom):
+def test_the_status_tells_a_sandbox_of_the_plugin_and_gives_its_version(make, custom):
+    ours = sandbox_object()
+    ours["metadata"].update(labels={"hermes-task": "hermes-a"}, resourceVersion="42")
+    other = sandbox_object()
+    other["metadata"] = {"name": "other", "resourceVersion": "7"}
+    custom.objects = {"hermes-a": ours, "other": other}
+
+    statuses = {s.name: s for s in make()[0].list_sandboxes()}
+
+    assert statuses["hermes-a"].managed and statuses["hermes-a"].resource_version == "42"
+    assert not statuses["other"].managed
+
+
+def test_delete_with_a_version_sends_it_as_a_precondition(make, custom, core):
+    cluster, _ = make()
+    sent = []
+    custom.delete_namespaced_custom_object = lambda *a, **kw: sent.append((a[-1], kw))
+
+    cluster.delete_sandbox("hermes-a", resource_version="42")
+
+    [(name, kw)] = sent
+    assert name == "hermes-a"
+    assert kw["body"].preconditions.resource_version == "42"
+    assert core.deleted == ["data-hermes-a"]
+
+
+def test_a_refused_precondition_keeps_the_volume(make, custom, core):
+    cluster, _ = make()
+    custom.objects["hermes-a"] = sandbox_object()
+
+    def conflict(group, version, namespace, plural, name, **kw):
+        raise api_error(409, {"message": "the object has been modified"})
+
+    custom.delete_namespaced_custom_object = conflict
+
+    with pytest.raises(ClusterError, match="modified"):
+        cluster.delete_sandbox("hermes-a", resource_version="42")
+    assert core.deleted == []
+
+
+def snapshot_with_status(body, status):
+    return {**body, "status": status}
+
+
+def test_archive_snapshots_the_volume_and_waits_until_it_is_ready(make, custom):
     cluster, _ = make()
     polls = []
 
     def create(group, version, namespace, plural, body, **kw):
         custom.calls.append(("create", group, version, namespace, plural, body))
-        name = body["metadata"]["name"]
 
         def item():
-            polls.append(name)
-            return {**body, "status": {"readyToUse": len(polls) >= 3}}
+            polls.append(1)
+            return snapshot_with_status(body, {"readyToUse": len(polls) >= 3})
 
-        custom.objects[name] = item
+        custom.objects[body["metadata"]["name"]] = item
         return body
 
     custom.create_namespaced_custom_object = create
 
-    name = cluster.archive_sandbox("hermes-a", expires_at=2_000_000.0, timeout=5)
+    name = cluster.archive_sandbox(
+        "hermes-a", last_used=1_000_000.7, expires_at=2_000_000.0, timeout=5
+    )
 
     ((_, group, version, namespace, plural, body),) = custom.calls
     assert (group, version, namespace, plural) == (
@@ -641,7 +694,8 @@ def test_archive_snapshots_the_volume_of_the_sandbox_and_waits_until_it_is_ready
         "hermes-sandbox",
         "volumesnapshots",
     )
-    assert body["metadata"]["name"] == name
+    # One name for one sandbox and one last use: a second reaper finds the same archive.
+    assert name == body["metadata"]["name"] == "archive-hermes-a-1000000"
     assert body["metadata"]["labels"] == {
         "hermes-k8s/kind": "sandbox-archive",
         "hermes-k8s/sandbox": "hermes-a",
@@ -654,28 +708,77 @@ def test_archive_snapshots_the_volume_of_the_sandbox_and_waits_until_it_is_ready
     assert len(polls) == 3
 
 
+def test_an_archive_that_exists_is_waited_for_and_not_made_again(make, custom):
+    cluster, _ = make()
+    custom.objects["archive-hermes-a-1000000"] = {"status": {"readyToUse": True}}
+
+    def exists(group, version, namespace, plural, body, **kw):
+        custom.calls.append(("create", body["metadata"]["name"]))
+        raise api_error(409, {"message": "already exists"})
+
+    custom.create_namespaced_custom_object = exists
+
+    name = cluster.archive_sandbox("hermes-a", last_used=1_000_000.0, expires_at=2e6, timeout=1)
+
+    assert name == "archive-hermes-a-1000000"
+
+
+def test_a_failed_archive_is_deleted_and_raises_at_once(make, custom):
+    cluster, _ = make()
+
+    def create(group, version, namespace, plural, body, **kw):
+        custom.objects[body["metadata"]["name"]] = snapshot_with_status(
+            body, {"readyToUse": False, "error": {"message": "rbd: cannot snapshot"}}
+        )
+        return body
+
+    custom.create_namespaced_custom_object = create
+
+    with pytest.raises(ClusterError, match="cannot snapshot"):
+        cluster.archive_sandbox("hermes-a", last_used=1_000_000.0, expires_at=2e6, timeout=60)
+    assert ("delete", "archive-hermes-a-1000000") in custom.calls
+
+
 def test_an_archive_that_is_not_ready_in_time_is_a_cluster_error(make, custom):
     cluster, _ = make()
 
     with pytest.raises(ClusterError, match="not ready"):
-        cluster.archive_sandbox("hermes-a", expires_at=2_000_000.0, timeout=0.05)
+        cluster.archive_sandbox("hermes-a", last_used=1_000_000.0, expires_at=2e6, timeout=0.05)
 
 
-def test_a_full_snapshot_quota_gives_a_quota_error_for_the_archive(make, custom):
+def test_a_full_snapshot_quota_names_the_archive_in_the_error(make, custom):
     cluster, _ = make()
     custom.fail = api_error(
         403,
         {"message": "volumesnapshots is forbidden: exceeded quota: hermes-sandbox-quota"},
     )
 
-    with pytest.raises(QuotaExceeded):
-        cluster.archive_sandbox("hermes-a", expires_at=2_000_000.0, timeout=1)
+    with pytest.raises(QuotaExceeded) as caught:
+        cluster.archive_sandbox("hermes-a", last_used=1_000_000.0, expires_at=2e6, timeout=1)
+    assert "archive sandbox hermes-a" in str(caught.value)
+    assert "start a sandbox" not in str(caught.value)
 
 
-def archive_object(name, sandbox, expires, *, ready=True):
-    return {
+@pytest.mark.parametrize(
+    "error", [api_error(500, {"message": "boom"}), OSError("connection reset")]
+)
+def test_a_failed_poll_of_the_archive_is_a_cluster_error(make, custom, error):
+    cluster, _ = make()
+
+    def broken(*a, **kw):
+        raise error
+
+    custom.get_namespaced_custom_object = broken
+
+    with pytest.raises(ClusterError):
+        cluster.archive_sandbox("hermes-a", last_used=1_000_000.0, expires_at=2e6, timeout=1)
+
+
+def archive_object(name, sandbox, expires, *, ready=True, deleting=False):
+    item = {
         "metadata": {
             "name": name,
+            "creationTimestamp": "2026-11-27T10:00:00Z",
             "labels": {
                 "hermes-k8s/kind": "sandbox-archive",
                 "hermes-k8s/sandbox": sandbox,
@@ -684,6 +787,9 @@ def archive_object(name, sandbox, expires, *, ready=True):
         },
         "status": {"readyToUse": ready},
     }
+    if deleting:
+        item["metadata"]["deletionTimestamp"] = "2026-11-27T11:00:00Z"
+    return item
 
 
 def test_the_archives_are_the_volume_snapshots_with_the_label_sandbox_archive(make, custom):
@@ -691,17 +797,32 @@ def test_the_archives_are_the_volume_snapshots_with_the_label_sandbox_archive(ma
     custom.snapshots = [
         archive_object("x", "hermes-a", "2000000"),
         archive_object("y", "hermes-b", "not-a-number", ready=False),
+        archive_object("n", "hermes-c", "nan"),
+        archive_object("i", "hermes-c", "inf"),
+        archive_object("gone", "hermes-d", "2000000", deleting=True),
     ]
 
     archives = cluster.list_archives()
 
     ((_, *_, kw),) = custom.calls
     assert kw["label_selector"] == "hermes-k8s/kind=sandbox-archive"
+    # An archive with no valid expiry never expires on its own: a person examines it. An
+    # archive in deletion is not an archive any more.
     assert [(a.name, a.sandbox, a.expires_at, a.ready) for a in archives] == [
         ("x", "hermes-a", 2_000_000.0, True),
-        # An archive with no valid expiry never expires on its own: a person examines it.
         ("y", "hermes-b", None, False),
+        ("n", "hermes-c", None, True),
+        ("i", "hermes-c", None, True),
     ]
+
+
+@pytest.mark.parametrize("error", [api_error(500, {"message": "boom"}), OSError("reset")])
+def test_a_failed_list_of_the_archives_is_a_cluster_error(make, custom, error):
+    cluster, _ = make()
+    custom.fail = error
+
+    with pytest.raises(ClusterError):
+        cluster.list_archives()
 
 
 def test_delete_archive_deletes_the_snapshot_and_ignores_a_missing_one(make, custom):
