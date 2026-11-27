@@ -439,10 +439,12 @@ class KubernetesCluster:
                 return archive
             failure = status.get("error")
             if failure:
-                # A failed snapshot never becomes ready. Free its quota, so the next run can
-                # make it again.
-                self.delete_archive(archive)
+                # The snapshotter can retry a failure, but the next run makes the archive again
+                # in any case. The delete frees the quota now. The error goes first into the log,
+                # so a failed delete does not hide it.
                 message = failure.get("message") if isinstance(failure, dict) else failure
+                logger.warning("The archive %s failed: %s", archive, message)
+                self.delete_archive(archive)
                 raise ClusterError(f"the archive {archive} failed: {message}")
             if time.monotonic() >= deadline:
                 raise ClusterError(
@@ -465,7 +467,7 @@ class KubernetesCluster:
             raise ClusterError(f"list the sandbox archives: {type(error).__name__}") from None
         archives = []
         for item in result.get("items", []):
-            # An archive in deletion is gone for the reaper.
+            # The reaper skips an archive that is in deletion.
             if item["metadata"].get("deletionTimestamp"):
                 continue
             labels = item["metadata"].get("labels", {})

@@ -1,6 +1,8 @@
 """Seam 1 through the fake cluster: the shared suite, and the tests that need its internals."""
 
+import pytest
 from images import IMAGE
+from k8s_sandbox.cluster import SUSPENDED, ClusterError
 from seam1_shared import *
 
 
@@ -163,7 +165,7 @@ def test_each_new_sandbox_records_its_task_and_profile(make_env, cluster, monkey
 
 
 def test_a_resume_moves_the_end_of_life_before_it_starts_the_pod(make_env, cluster, clock):
-    # After `shutdownTime`, the controller starts no pod, also in Running mode. So the new
+    # After `shutdownTime`, the controller starts no pod, even in Running mode. Therefore the new
     # last use must reach the Sandbox before the mode changes.
     env = make_env("a")
     env.cleanup()
@@ -176,3 +178,18 @@ def test_a_resume_moves_the_end_of_life_before_it_starts_the_pod(make_env, clust
     running = cluster.events.index(("mode", env.sandbox_name, "Running"))
     assert marks and marks[0] < running
     assert cluster.sandboxes[env.sandbox_name].shutdown_time == clock() + 7 * 24 * 3600
+
+
+def test_a_resume_stops_when_the_end_of_life_cannot_move(make_env, cluster):
+    # With a past `shutdownTime`, a resume with no new last use gives no pod. Fail at once.
+    env = make_env("a")
+    env.cleanup()
+
+    def broken(name, at):
+        raise ClusterError("the API server is down")
+
+    cluster.mark_used = broken
+
+    with pytest.raises(ClusterError, match="down"):
+        make_env("a")
+    assert cluster.get_sandbox(env.sandbox_name).operating_mode == SUSPENDED

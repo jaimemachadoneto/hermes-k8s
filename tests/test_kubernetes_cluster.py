@@ -576,7 +576,7 @@ def test_mark_used_patches_the_annotation_and_the_end_of_life(make, custom):
 
     make()[0].mark_used("hermes-a", 1_800_000_000.5)
 
-    # The controller stops the pod 7 days after the last use (ADR 0013).
+    # The controller deletes the pod 7 days after the last use (ADR 0013).
     assert custom.calls[-1] == (
         "patch",
         "hermes-a",
@@ -710,7 +710,13 @@ def test_archive_snapshots_the_volume_and_waits_until_it_is_ready(make, custom):
 
 def test_an_archive_that_exists_is_waited_for_and_not_made_again(make, custom):
     cluster, _ = make()
-    custom.objects["archive-hermes-a-1000000"] = {"status": {"readyToUse": True}}
+    polls = []
+
+    def existing():
+        polls.append(1)
+        return {"status": {"readyToUse": len(polls) >= 3}}
+
+    custom.objects["archive-hermes-a-1000000"] = existing
 
     def exists(group, version, namespace, plural, body, **kw):
         custom.calls.append(("create", body["metadata"]["name"]))
@@ -718,9 +724,12 @@ def test_an_archive_that_exists_is_waited_for_and_not_made_again(make, custom):
 
     custom.create_namespaced_custom_object = exists
 
-    name = cluster.archive_sandbox("hermes-a", last_used=1_000_000.0, expires_at=2e6, timeout=1)
+    name = cluster.archive_sandbox("hermes-a", last_used=1_000_000.0, expires_at=2e6, timeout=5)
 
     assert name == "archive-hermes-a-1000000"
+    # The archive of the other reaper was not ready at first: this call waited for it.
+    assert len(polls) == 3
+    assert custom.calls == [("create", "archive-hermes-a-1000000")]
 
 
 def test_a_failed_archive_is_deleted_and_raises_at_once(make, custom):
@@ -807,7 +816,7 @@ def test_the_archives_are_the_volume_snapshots_with_the_label_sandbox_archive(ma
     ((_, *_, kw),) = custom.calls
     assert kw["label_selector"] == "hermes-k8s/kind=sandbox-archive"
     # An archive with no valid expiry never expires on its own: a person examines it. An
-    # archive in deletion is not an archive any more.
+    # reaper skips an archive that is in deletion.
     assert [(a.name, a.sandbox, a.expires_at, a.ready) for a in archives] == [
         ("x", "hermes-a", 2_000_000.0, True),
         ("y", "hermes-b", None, False),

@@ -114,6 +114,17 @@ def test_a_sandbox_that_a_command_resumes_during_the_archive_is_kept(cluster, cl
     assert cluster.get_sandbox("hermes-x").operating_mode == RUNNING
 
 
+def test_a_new_last_use_during_the_archive_keeps_the_sandbox(cluster, clock):
+    # A short command can use the sandbox and leave it suspended again during the archive. The
+    # archive then does not hold that work.
+    cluster.add_sandbox("hermes-x", mode=SUSPENDED, last_used=clock())
+    clock.advance(EXPIRE_SECONDS + 1)
+    cluster.during_archive = lambda name: cluster.mark_used(name, clock() - 1)
+
+    assert reap_expired(cluster, now=clock()).deleted == []
+    assert cluster.get_sandbox("hermes-x") is not None
+
+
 def test_a_change_between_the_last_read_and_the_delete_stops_the_delete(cluster, clock, caplog):
     cluster.add_sandbox("hermes-x", mode=SUSPENDED, last_used=clock())
     clock.advance(EXPIRE_SECONDS + 1)

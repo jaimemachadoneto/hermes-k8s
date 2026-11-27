@@ -26,8 +26,8 @@ TASK_ANNOTATION = "hermes-k8s/task"
 PROFILE_ANNOTATION = "hermes-k8s/profile"
 # The label that the plugin puts on each Sandbox that it makes. The reaper acts only on these.
 TASK_LABEL = "hermes-task"
-# A sandbox expires 7 days after its last use (ticket 14, ADR 0013). Each last use moves the
-# `shutdownTime` of the Sandbox to this time after it.
+# A sandbox expires 7 days after its last use (ticket 14, ADR 0013). Each last use sets the
+# `shutdownTime` of the Sandbox to the last use plus this time.
 SANDBOX_TTL_SECONDS = 7 * 24 * 3600.0
 
 # A Kubernetes object name is at most 63 characters (a DNS label).

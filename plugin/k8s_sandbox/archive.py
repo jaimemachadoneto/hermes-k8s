@@ -3,11 +3,12 @@
 A sandbox that stays suspended for `EXPIRE_SECONDS` after its last use expires. The reaper makes a
 sandbox archive of its volume, waits until the archive is ready, and then deletes the sandbox. The
 delete of a Sandbox deletes its volume, so the archive must be ready first. The reaper deletes each
-sandbox archive after `ARCHIVE_KEEP_SECONDS`. The chat history stays in Hermes. An archive is a
+sandbox archive after `ARCHIVE_KEEP_SECONDS`. The history of the session stays in Hermes. An archive is a
 copy of the whole volume of the sandbox.
 
 Each last use also moves the `shutdownTime` of the Sandbox (`Cluster.mark_used`). The controller
-then stops the pod of an expired sandbox also when Hermes does not run. Only the reaper deletes.
+then deletes the pod of an expired sandbox, even when Hermes is down. Only the reaper deletes
+a sandbox.
 """
 
 from __future__ import annotations
@@ -70,8 +71,8 @@ def _reap_sandbox(
         return False
     if after.last_used != before.last_used:
         return False
-    # A command that resumes the sandbox after this read changes its version, and the API server
-    # then refuses the delete.
+    # A command that resumes the sandbox after this read changes its version. Then the API server
+    # refuses the delete.
     cluster.delete_sandbox(name, resource_version=after.resource_version)
     return True
 

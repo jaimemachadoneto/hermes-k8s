@@ -14,6 +14,7 @@ from .cluster import (
     RUNNING,
     SUSPENDED,
     TASK_ANNOTATION,
+    TASK_LABEL,
     CancelToken,
     Cluster,
     ClusterError,
@@ -113,6 +114,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
         self._ready_timeout = ready_timeout
         self.sandbox_name = sandbox_name(task_id, profile)
         self._extra_labels = extra_labels or {}
+        self._clock = clock
         self._use = UseMarker(cluster, self.sandbox_name, clock)
         self._open_sandbox(image, profile)
         if cwd == "~":
@@ -128,7 +130,7 @@ class K8sSandboxEnvironment(BaseEnvironment):
             self._cluster.create_sandbox(
                 self.sandbox_name,
                 image=image,
-                labels={"hermes-task": self.sandbox_name, **self._extra_labels},
+                labels={TASK_LABEL: self.sandbox_name, **self._extra_labels},
                 profile=profile,
                 nix_base=nix_base,
                 annotations={TASK_ANNOTATION: self._task_id, PROFILE_ANNOTATION: profile},
@@ -139,9 +141,10 @@ class K8sSandboxEnvironment(BaseEnvironment):
                 f"Nix base {nix_base}" if nix_base else "an empty volume",
             )
         else:
-            # After `shutdownTime` the controller starts no pod, also in Running mode. The new
-            # last use moves `shutdownTime`, so it must come before the resume.
-            self._use.mark(force=True)
+            # After `shutdownTime` the controller starts no pod, even in Running mode. The new
+            # last use moves `shutdownTime`, so it must come before the resume. A failure here
+            # stops the resume: without the mark, the wait for the pod could only time out.
+            self._cluster.mark_used(self.sandbox_name, self._clock())
             if status.operating_mode == SUSPENDED:
                 self._cluster.set_operating_mode(self.sandbox_name, RUNNING)
                 logger.info("Resumed sandbox %s", self.sandbox_name)
